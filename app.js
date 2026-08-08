@@ -1,0 +1,669 @@
+/**
+ * ================================================================
+ * WILAN SUN TRACKER — app.js
+ * Film Production Location Scouting Tool
+ *
+ * Module map:
+ *   state          — Single source of truth for all sensor data
+ *   dom            — Cached DOM element references
+ *   cameraModule   — Rear-facing camera stream via getUserMedia
+ *   gpsModule      — Real-time coordinates via Geolocation API
+ *   compassModule  — Device orientation (iOS 13+ permission pattern)
+ *   sunModule      — PLACEHOLDER for SunCalc.js integration
+ *   uiModule       — All DOM update functions (no logic here)
+ *   saveModule     — PLACEHOLDER for Supabase + Notion + ClickUp
+ *   permModule     — Orchestrates all permission requests
+ *   App            — Public API exposed on window for HTML onclicks
+ * ================================================================
+ */
+
+'use strict';
+
+
+// ================================================================
+// STATE
+// One flat object — mutated in place, read by uiModule to render.
+// ================================================================
+const state = {
+  coords:   null,    // { latitude, longitude, accuracy } from GPS
+  heading:  null,    // 0–360 degrees, 0 = North, from device compass
+  sun: {
+    azimuth:   null, // 0–360 degrees from North (computed by SunCalc)
+    elevation: null, // degrees above horizon, negative = below horizon
+  },
+  gpsWatchId:       null,
+  compassHandler:   null,  // stored so we can removeEventListener later
+  permissionsGranted: false,
+};
+
+
+// ================================================================
+// DOM
+// Cached once at script parse time — avoids repeated querySelector.
+// ================================================================
+const dom = {
+  video:               document.getElementById('camera-feed'),
+
+  // Status dots in the header
+  camDot:              document.getElementById('cam-dot'),
+  gpsDot:              document.getElementById('gps-dot'),
+  compassDot:          document.getElementById('compass-dot'),
+
+  // Permission gate
+  permissionSection:   document.getElementById('permission-section'),
+  btnPermissions:      document.getElementById('btn-permissions'),
+  permBtnIcon:         document.getElementById('perm-btn-icon'),
+  permBtnText:         document.getElementById('perm-btn-text'),
+  permissionError:     document.getElementById('permission-error'),
+
+  // Data card (shown after permissions)
+  dataSection:         document.getElementById('data-section'),
+  latDisplay:          document.getElementById('lat-display'),
+  lngDisplay:          document.getElementById('lng-display'),
+  accuracyDisplay:     document.getElementById('accuracy-display'),
+  headingDisplay:      document.getElementById('heading-display'),
+  sunAzimuthDisplay:   document.getElementById('sun-azimuth-display'),
+  sunElevationDisplay: document.getElementById('sun-elevation-display'),
+  timestampDisplay:    document.getElementById('timestamp-display'),
+
+  // AR overlay widgets
+  compassCardinal:     document.getElementById('compass-cardinal'),
+  compassDegrees:      document.getElementById('compass-degrees'),
+  sunDirectionWrap:    document.getElementById('sun-direction-wrap'),
+  sunArrow:            document.getElementById('sun-arrow'),
+  sunDirectionLabel:   document.getElementById('sun-direction-label'),
+};
+
+
+// ================================================================
+// CAMERA MODULE
+// Streams the rear-facing camera into the <video> background.
+//
+// `facingMode: { ideal: 'environment' }` prefers the back camera
+// but gracefully falls back to front if no back camera exists
+// (e.g. a laptop webcam during desktop testing).
+//
+// Resolution and frame-rate are capped at 720p / 30fps to balance
+// AR visual quality against battery drain on mobile.
+// ================================================================
+const cameraModule = {
+
+  async start() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn('[Camera] getUserMedia not supported.');
+      uiModule.setDot(dom.camDot, 'error');
+      return false;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode:  { ideal: 'environment' },
+          width:       { ideal: 1280, max: 1920 },
+          height:      { ideal: 720,  max: 1080 },
+          frameRate:   { ideal: 30,   max: 30   },
+        },
+        audio: false,
+      });
+
+      dom.video.srcObject = stream;
+
+      // `loadedmetadata` fires before the first frame is decoded — safer
+      // than `canplay` for kicking off play() to avoid iOS NotAllowedError.
+      await new Promise(resolve =>
+        dom.video.addEventListener('loadedmetadata', resolve, { once: true })
+      );
+      await dom.video.play();
+
+      uiModule.setDot(dom.camDot, 'active');
+      console.log('[Camera] Stream active.');
+      return true;
+
+    } catch (err) {
+      // NotAllowedError  — user denied permission
+      // NotFoundError    — no camera found
+      // OverconstrainedError — constraints couldn't be met (rare)
+      console.error('[Camera]', err.name, '—', err.message);
+      uiModule.setDot(dom.camDot, 'error');
+      return false;
+    }
+  },
+
+  stop() {
+    dom.video.srcObject?.getTracks().forEach(t => t.stop());
+    dom.video.srcObject = null;
+    uiModule.setDot(dom.camDot, 'idle');
+  },
+};
+
+
+// ================================================================
+// GPS MODULE
+// `watchPosition` pushes updates whenever the device moves or when
+// a more accurate fix becomes available. It is throttled by the OS
+// on mobile (typically 1–4 s between updates) so it is not a major
+// battery concern with `enableHighAccuracy: true`.
+//
+// If you prefer pure battery savings over live tracking, replace
+// watchPosition with a setInterval + getCurrentPosition at ~10 s.
+// ================================================================
+const gpsModule = {
+
+  start() {
+    if (!('geolocation' in navigator)) {
+      console.warn('[GPS] Geolocation API not supported.');
+      uiModule.setDot(dom.gpsDot, 'error');
+      return false;
+    }
+
+    state.gpsWatchId = navigator.geolocation.watchPosition(
+      pos   => this._onSuccess(pos),
+      err   => this._onError(err),
+      {
+        enableHighAccuracy: true,  // Use GPS chip vs. Wi-Fi/cell tower estimate
+        maximumAge:         5_000, // Accept a cached position up to 5 s old
+        timeout:            15_000, // Fail after 15 s without a fix
+      }
+    );
+
+    console.log('[GPS] Watching position, ID:', state.gpsWatchId);
+    return true;
+  },
+
+  stop() {
+    if (state.gpsWatchId !== null) {
+      navigator.geolocation.clearWatch(state.gpsWatchId);
+      state.gpsWatchId = null;
+    }
+    uiModule.setDot(dom.gpsDot, 'idle');
+  },
+
+  _onSuccess(position) {
+    state.coords = {
+      latitude:  position.coords.latitude,
+      longitude: position.coords.longitude,
+      accuracy:  position.coords.accuracy,    // metres
+    };
+
+    uiModule.setDot(dom.gpsDot, 'active');
+    uiModule.updateGPS(state.coords);
+
+    // Trigger a sun position recalculation every time GPS updates.
+    // sunModule internally throttles this to avoid redundant work.
+    sunModule.update(state.coords.latitude, state.coords.longitude);
+  },
+
+  _onError(err) {
+    const msg = {
+      1: 'Location permission denied. Enable it in device Settings.',
+      2: 'Position unavailable. Is GPS enabled?',
+      3: 'GPS timed out. Move to an open area and retry.',
+    }[err.code] ?? err.message;
+
+    console.error('[GPS]', msg);
+    uiModule.setDot(dom.gpsDot, 'error');
+  },
+};
+
+
+// ================================================================
+// COMPASS MODULE
+//
+// ── iOS 13+ requires DeviceOrientationEvent.requestPermission() ──
+// This is an async method that MUST be called synchronously inside
+// a user-gesture handler (e.g. a button click). Calling it outside
+// a gesture context will either silently fail or throw a TypeError.
+//
+// Android does NOT have this method — permission is implicit —
+// so we check for its existence before calling it.
+//
+// ── Heading source priority ──────────────────────────────────────
+// 1. `webkitCompassHeading` (iOS) — 0–360°, magnetic North, always
+//    corrected for device orientation. Most reliable on iPhone/iPad.
+// 2. `deviceorientationabsolute` alpha (Chrome Android) — 0–360°,
+//    true North if the device has a magnetometer.
+// 3. `deviceorientation` alpha (fallback) — may be relative to the
+//    initial orientation, not North. Less reliable.
+//
+// ── Battery note ─────────────────────────────────────────────────
+// The OS throttles orientation events to ~60 Hz. We further cap
+// DOM updates to 10 Hz (100 ms) since the compass needle animation
+// CSS transition already smoothes the visual.
+// ================================================================
+const compassModule = {
+
+  async requestPermission() {
+    // iOS 13+ gate
+    if (
+      typeof DeviceOrientationEvent !== 'undefined' &&
+      typeof DeviceOrientationEvent.requestPermission === 'function'
+    ) {
+      let response;
+      try {
+        response = await DeviceOrientationEvent.requestPermission();
+      } catch (err) {
+        // Thrown when called outside a user gesture
+        console.error('[Compass] requestPermission() must be called in a user gesture:', err.message);
+        uiModule.setDot(dom.compassDot, 'error');
+        return false;
+      }
+
+      if (response !== 'granted') {
+        console.warn('[Compass] iOS motion permission denied.');
+        uiModule.setDot(dom.compassDot, 'error');
+        return false;
+      }
+
+      console.log('[Compass] iOS motion permission granted.');
+    }
+    // Android / desktop: no requestPermission needed; fall through.
+
+    this._listen();
+    return true;
+  },
+
+  _listen() {
+    let lastUpdate    = 0;
+    let hasAbsolute   = false; // once we get `absolute` events, ignore non-absolute
+
+    // Build the handler and persist the reference so we can remove it later
+    state.compassHandler = (event) => {
+      // Prefer absolute events (true North) over relative ones
+      if (event.absolute === true) hasAbsolute = true;
+      if (!event.absolute && hasAbsolute)  return;
+
+      // Throttle DOM updates to 10 Hz
+      const now = Date.now();
+      if (now - lastUpdate < 100) return;
+      lastUpdate = now;
+
+      let heading = null;
+
+      if (typeof event.webkitCompassHeading === 'number') {
+        // iOS: already 0–360° from magnetic North, corrected for portrait/landscape
+        heading = event.webkitCompassHeading;
+      } else if (typeof event.alpha === 'number') {
+        // Chromium/Firefox: alpha is the rotation around the Z-axis.
+        // For absolute events this is 0–360° from true North (counterclockwise),
+        // so we convert: compass_bearing = (360 - alpha) % 360
+        heading = (360 - event.alpha + 360) % 360;
+      }
+
+      if (heading === null) return;
+
+      state.heading = heading;
+      uiModule.setDot(dom.compassDot, 'active');
+      uiModule.updateCompass(heading);
+
+      // Keep the sun direction arrow aligned to the new heading
+      if (state.sun.azimuth !== null) {
+        uiModule.updateSunArrow(state.sun.azimuth, heading);
+      }
+    };
+
+    // Register on both event types; the flag above handles deduplication.
+    window.addEventListener('deviceorientationabsolute', state.compassHandler, true);
+    window.addEventListener('deviceorientation',         state.compassHandler, true);
+
+    console.log('[Compass] Listening for orientation events.');
+  },
+
+  stop() {
+    if (state.compassHandler) {
+      window.removeEventListener('deviceorientationabsolute', state.compassHandler, true);
+      window.removeEventListener('deviceorientation',         state.compassHandler, true);
+      state.compassHandler = null;
+    }
+    state.heading = null;
+    uiModule.setDot(dom.compassDot, 'idle');
+  },
+};
+
+
+// ================================================================
+// SUN MODULE
+// Uses SunCalc (loaded in index.html) to compute real-time sun
+// azimuth and elevation from the current GPS coordinates.
+//
+// SunCalc.getPosition(date, lat, lng) returns:
+//   .altitude  Radians above horizon (+) or below horizon (−)
+//   .azimuth   Radians from SOUTH, clockwise
+//              → convert to 0–360° from North:
+//              (az_rad * 180/π + 180 + 360) % 360
+// ================================================================
+const sunModule = {
+
+  // Throttle: the sun moves ~0.25°/min — recalculating every 10 s
+  // is more than sufficient and avoids redundant JS execution.
+  _INTERVAL_MS:  10_000,
+  _lastCalcTime: 0,
+
+  update(lat, lng) {
+    const now = Date.now();
+    if (now - this._lastCalcTime < this._INTERVAL_MS) return;
+    this._lastCalcTime = now;
+
+    if (typeof SunCalc === 'undefined') {
+      console.warn('[Sun] SunCalc not found on window — check the CDN script tag in index.html.');
+      uiModule.updateSun(null, null);
+      return;
+    }
+
+    const pos          = SunCalc.getPosition(new Date(), lat, lng);
+    const azimuthDeg   = (pos.azimuth * 180 / Math.PI + 180 + 360) % 360;
+    const elevationDeg = pos.altitude  * 180 / Math.PI;
+
+    state.sun.azimuth   = azimuthDeg;
+    state.sun.elevation = elevationDeg;
+
+    uiModule.updateSun(azimuthDeg, elevationDeg);
+    uiModule.updateSunArrow(azimuthDeg, state.heading);
+  },
+};
+
+
+// ================================================================
+// UI MODULE
+// All DOM mutations live here. Sensor modules call uiModule methods
+// and never touch the DOM directly — keeps concerns separated.
+// ================================================================
+const uiModule = {
+
+  // Set a header status dot to one of three visual states
+  setDot(el, state) {
+    el.className = 'w-2 h-2 rounded-full transition-colors duration-300 ';
+    el.className += {
+      active: 'bg-emerald-400 dot-pulse',
+      error:  'bg-red-500',
+      idle:   'bg-slate-700',
+    }[state] ?? 'bg-slate-700';
+  },
+
+  // Show data card, hide permission gate
+  showDataSection() {
+    dom.permissionSection.classList.add('hidden');
+    dom.dataSection.classList.remove('hidden');
+  },
+
+  // GPS coordinates and accuracy
+  updateGPS({ latitude, longitude, accuracy }) {
+    dom.latDisplay.textContent      = latitude.toFixed(6);
+    dom.lngDisplay.textContent      = longitude.toFixed(6);
+    dom.accuracyDisplay.textContent = accuracy < 1000
+      ? `±${Math.round(accuracy)} m`
+      : `±${(accuracy / 1000).toFixed(1)} km`;
+    this._refreshTimestamp();
+  },
+
+  // Compass heading (degrees and cardinal)
+  updateCompass(heading) {
+    const rounded = Math.round(heading);
+    dom.headingDisplay.textContent  = `${rounded}°`;
+    dom.compassDegrees.textContent  = `${rounded}°`;
+    dom.compassCardinal.textContent = this._toCardinal(heading);
+  },
+
+  // Sun azimuth and elevation (null = SunCalc not yet active)
+  updateSun(azimuth, elevation) {
+    if (azimuth !== null && elevation !== null) {
+      dom.sunAzimuthDisplay.textContent   = `${azimuth.toFixed(1)}°`;
+      dom.sunElevationDisplay.textContent = `${elevation.toFixed(1)}°`;
+    } else {
+      // Friendly placeholder until SunCalc is integrated
+      dom.sunAzimuthDisplay.textContent   = '--- ° (add SunCalc)';
+      dom.sunElevationDisplay.textContent = '--- ° (add SunCalc)';
+    }
+  },
+
+  // Rotate the AR sun arrow to show where the sun is relative to the camera
+  updateSunArrow(sunAzimuth, deviceHeading) {
+    if (sunAzimuth === null || deviceHeading === null) return;
+
+    // Relative angle: how many degrees to the right of camera-forward is the sun?
+    const relative = (sunAzimuth - deviceHeading + 360) % 360;
+
+    dom.sunArrow.style.transform         = `rotate(${relative}deg)`;
+    dom.sunDirectionLabel.textContent    = `${this._toCardinal(sunAzimuth)}  ${sunAzimuth.toFixed(0)}°`;
+    dom.sunDirectionWrap.style.opacity   = '1';
+  },
+
+  // Timestamp in the data card footer
+  _refreshTimestamp() {
+    const d = new Date();
+    dom.timestampDisplay.textContent =
+      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) +
+      '  ' +
+      d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+  },
+
+  // Set permission button to a loading / idle appearance
+  setPermBtnLoading(loading) {
+    dom.btnPermissions.disabled  = loading;
+    dom.permBtnIcon.textContent  = loading ? '⏳' : '📡';
+    dom.permBtnText.textContent  = loading
+      ? 'Requesting permissions…'
+      : 'Request Camera & Sensor Permissions';
+  },
+
+  showPermError(msg) {
+    dom.permissionError.textContent = msg;
+    dom.permissionError.classList.remove('hidden');
+  },
+
+  // Convert 0–360 degrees to a 16-point cardinal string
+  _toCardinal(deg) {
+    const pts = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
+                 'S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    return pts[Math.round(deg / 22.5) % 16];
+  },
+};
+
+
+// ================================================================
+// SAVE MODULE
+//
+// ┌────────────────────────────────────────────────────────────────┐
+// │  SUPABASE INTEGRATION                                          │
+// │                                                                │
+// │  1. Add to index.html (before app.js):                        │
+// │     <script src="https://cdn.jsdelivr.net/npm/@supabase/      │
+// │       supabase-js@2/dist/umd/supabase.min.js"></script>       │
+// │                                                                │
+// │  2. Replace YOUR_SUPABASE_URL and YOUR_SUPABASE_ANON_KEY      │
+// │     (use environment variable injection at build time or a     │
+// │     runtime config object loaded from a separate config.js)   │
+// │                                                                │
+// │  3. Create a `location_scouts` table with columns matching     │
+// │     the `record` object below.                                 │
+// │                                                                │
+// │  4. Uncomment the Supabase block in save() below.             │
+// └────────────────────────────────────────────────────────────────┘
+//
+// ┌────────────────────────────────────────────────────────────────┐
+// │  NOTION API INTEGRATION                                        │
+// │                                                                │
+// │  Endpoint: POST https://api.notion.com/v1/pages               │
+// │  Auth:     Authorization: Bearer <NOTION_INTEGRATION_TOKEN>   │
+// │  Version:  Notion-Version: 2022-06-28                         │
+// │                                                                │
+// │  NOTE: Notion's API does not allow direct browser requests     │
+// │  (CORS). You'll need a small server-side proxy (a Vercel      │
+// │  serverless function or Supabase Edge Function works well).   │
+// └────────────────────────────────────────────────────────────────┘
+//
+// ┌────────────────────────────────────────────────────────────────┐
+// │  CLICKUP API INTEGRATION                                       │
+// │                                                                │
+// │  Endpoint: POST https://api.clickup.com/api/v2/               │
+// │                 list/{LIST_ID}/task                            │
+// │  Auth:     Authorization: <CLICKUP_API_KEY>                   │
+// │                                                                │
+// │  ClickUp supports direct CORS requests — you can call this    │
+// │  from the browser if you keep the API key server-side or use  │
+// │  a public workspace token (for non-sensitive scouts).         │
+// └────────────────────────────────────────────────────────────────┘
+
+const saveModule = {
+
+  async save() {
+    if (!state.coords) {
+      alert('No GPS fix yet.\nWait for coordinates to appear, then try again.');
+      return;
+    }
+
+    // Canonical location record — maps 1:1 to a Supabase table row.
+    // Extend with any additional film metadata your production needs.
+    const record = {
+      timestamp:         new Date().toISOString(),
+      latitude:          state.coords.latitude,
+      longitude:         state.coords.longitude,
+      gps_accuracy_m:    Math.round(state.coords.accuracy),
+      compass_heading:   state.heading !== null ? Math.round(state.heading) : null,
+      sun_azimuth_deg:   state.sun.azimuth   !== null ? +state.sun.azimuth.toFixed(2)   : null,
+      sun_elevation_deg: state.sun.elevation !== null ? +state.sun.elevation.toFixed(2) : null,
+      // ── Add your production fields here: ──────────────────────
+      // scene_number:   null,
+      // shot_type:      null,   // 'wide' | 'medium' | 'close'
+      // notes:          null,
+      // production_name: null,
+    };
+
+    console.log('[Save] Record:', record);
+
+    // ── SUPABASE BLOCK — uncomment after setup ───────────────────
+    //
+    // const SUPABASE_URL      = 'https://YOUR_PROJECT.supabase.co';
+    // const SUPABASE_ANON_KEY = 'YOUR_ANON_KEY';
+    //
+    // const { createClient } = window.supabase;
+    // const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    //
+    // const { error: dbError } = await db
+    //   .from('location_scouts')
+    //   .insert(record);
+    //
+    // if (dbError) throw new Error(`Supabase: ${dbError.message}`);
+    // console.log('[Save] Saved to Supabase.');
+
+    // ── NOTION BLOCK — uncomment after setting up a proxy ────────
+    //
+    // const NOTION_TOKEN       = 'YOUR_INTEGRATION_TOKEN';
+    // const NOTION_DATABASE_ID = 'YOUR_DATABASE_ID';
+    // const PROXY_URL          = '/api/notion-proxy'; // your serverless function
+    //
+    // await fetch(PROXY_URL, {
+    //   method:  'POST',
+    //   headers: { 'Content-Type': 'application/json' },
+    //   body: JSON.stringify({
+    //     parent: { database_id: NOTION_DATABASE_ID },
+    //     properties: {
+    //       Name:      { title:  [{ text: { content: `Scout — ${record.timestamp}` } }] },
+    //       Latitude:  { number: record.latitude },
+    //       Longitude: { number: record.longitude },
+    //       // ... map remaining fields to your Notion schema
+    //     },
+    //   }),
+    // });
+    // console.log('[Save] Exported to Notion.');
+
+    // ── CLICKUP BLOCK — uncomment after setup ────────────────────
+    //
+    // const CLICKUP_API_KEY = 'YOUR_API_KEY';
+    // const CLICKUP_LIST_ID = 'YOUR_LIST_ID';
+    //
+    // await fetch(`https://api.clickup.com/api/v2/list/${CLICKUP_LIST_ID}/task`, {
+    //   method: 'POST',
+    //   headers: {
+    //     'Authorization': CLICKUP_API_KEY,
+    //     'Content-Type':  'application/json',
+    //   },
+    //   body: JSON.stringify({
+    //     name:        `Location Scout — ${record.timestamp}`,
+    //     description: JSON.stringify(record, null, 2),
+    //   }),
+    // });
+    // console.log('[Save] Exported to ClickUp.');
+
+    // ── Temporary feedback until integrations are live ───────────
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(record, null, 2));
+      alert(
+        '✅ Location record copied to clipboard!\n\n' +
+        'Supabase / Notion / ClickUp integrations are ready to activate.\n' +
+        'See the placeholder blocks in saveModule inside app.js.'
+      );
+    } catch {
+      // Clipboard API unavailable (HTTP context, etc.)
+      alert('Location record:\n\n' + JSON.stringify(record, null, 2));
+    }
+  },
+};
+
+
+// ================================================================
+// PERMISSIONS MODULE
+// Must be triggered from a user gesture (button click) on iOS.
+// Orchestrates camera → compass → GPS in that order so that the
+// iOS DeviceOrientationEvent.requestPermission() call still sits
+// within the synchronous user-gesture event boundary.
+// ================================================================
+const permModule = {
+
+  async request() {
+    uiModule.setPermBtnLoading(true);
+    dom.permissionError.classList.add('hidden');
+
+    try {
+      // ── 1. Camera ───────────────────────────────────────────────
+      // getUserMedia triggers its own OS permission sheet.
+      const cameraOk = await cameraModule.start();
+
+      // ── 2. Compass (iOS 13+ needs gesture context — call here) ──
+      // This is still inside the event tick started by the button click,
+      // which satisfies iOS's user-gesture requirement.
+      await compassModule.requestPermission();
+
+      // ── 3. GPS ──────────────────────────────────────────────────
+      // geolocation.watchPosition will show the OS location sheet.
+      gpsModule.start();
+
+      // ── Reveal data card ────────────────────────────────────────
+      if (cameraOk) {
+        state.permissionsGranted = true;
+        uiModule.showDataSection();
+      } else {
+        uiModule.showPermError(
+          'Camera access is required. Check your browser and device Settings, then refresh.'
+        );
+        uiModule.setPermBtnLoading(false);
+      }
+
+    } catch (err) {
+      console.error('[Permissions] Unexpected error:', err);
+      uiModule.showPermError(`Unexpected error: ${err.message}`);
+      uiModule.setPermBtnLoading(false);
+    }
+  },
+};
+
+
+// ================================================================
+// PUBLIC API
+// Exposed on `window.App` so the inline onclick attributes in
+// index.html can reach module methods without polluting global scope.
+// ================================================================
+window.App = {
+  requestPermissions: () => permModule.request(),
+  saveLocation:       () => saveModule.save(),
+};
+
+
+// ================================================================
+// INIT
+// Minimal startup — no auto-requests. iOS requires that all sensor
+// permissions are triggered by an explicit user gesture, so we
+// simply let the page render with the permission button visible.
+// ================================================================
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('[App] Wilan Sun Tracker — ready. Waiting for user gesture to start sensors.');
+});
