@@ -58,6 +58,7 @@ const state = {
     set:          null,
   },
   planets:          [],   // [{ name, azimuth, elevation }] — above horizon only
+  tilt:             null, // camera elevation angle (deg): 0=horizontal, 90=straight up
   gpsWatchId:       null,
   compassHandler:   null,
   permissionsGranted: false,
@@ -119,6 +120,7 @@ const dom = {
   planetsList:          document.getElementById('planets-list'),
   planetsEmpty:         document.getElementById('planets-empty'),
   skyCanvas:            document.getElementById('sky-canvas'),
+  arCanvas:             document.getElementById('ar-canvas'),
 
   // Light schedule (Scout tab)
   lightScheduleSection: document.getElementById('light-schedule-section'),
@@ -281,6 +283,7 @@ const gpsModule = {
     planetsModule.update(lat, lng);
     goldenHourModule.update(lat, lng);
     skyChartModule.update(lat, lng);
+    arOverlayModule.update(lat, lng);
   },
 
   _onError(err) {
@@ -382,6 +385,13 @@ const compassModule = {
       if (heading === null) return;
 
       state.heading = heading;
+
+      // Camera elevation: beta=90° → phone upright → camera horizontal (tilt=0°)
+      //                   beta=0°  → phone flat    → camera up (tilt=90°)
+      if (typeof event.beta === 'number') {
+        state.tilt = 90 - event.beta;
+      }
+
       uiModule.setDot(dom.compassDot, 'active');
       uiModule.updateCompass(heading);
 
@@ -689,7 +699,22 @@ const skyChartModule = {
       alt: p.elevation, az: p.azimuth, icon: p.icon, name: p.name,
     }));
 
-    this._plotData = { stars, constLines, moon, planets };
+    // Today's sun path arc (15-min intervals, full 24 h)
+    const sunPath = [];
+    if (typeof SunCalc !== 'undefined') {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      for (let m = 0; m < 1440; m += 15) {
+        const t   = new Date(today.getTime() + m * 60_000);
+        const pos = SunCalc.getPosition(t, lat, lng);
+        sunPath.push({
+          alt: pos.altitude  * 180 / Math.PI,
+          az:  (pos.azimuth  * 180 / Math.PI + 180 + 360) % 360,
+          hour: t.getHours(), min: t.getMinutes(),
+        });
+      }
+    }
+
+    this._plotData = { stars, constLines, moon, planets, sunPath };
   },
 
   _getLST(lng_deg, date) {
@@ -832,6 +857,41 @@ const skyChartModule = {
       }
     });
 
+    // Sun path arc for today
+    const { sunPath } = this._plotData;
+    if (sunPath && sunPath.length > 0) {
+      ctx.strokeStyle = 'rgba(251,191,36,0.55)';
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      let sunPen = false;
+      sunPath.forEach(p => {
+        if (p.alt < -3) { sunPen = false; return; }
+        const { x, y } = this._proj(p.alt, p.az, cx, cy, r, h);
+        if (sunPen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); sunPen = true; }
+      });
+      ctx.stroke();
+
+      // Hour labels at whole-hour positions above horizon
+      ctx.fillStyle    = 'rgba(251,191,36,0.65)';
+      ctx.font         = '8px monospace';
+      ctx.textAlign    = 'left';
+      ctx.textBaseline = 'bottom';
+      sunPath.filter(p => p.min === 0 && p.alt > 2).forEach(p => {
+        const { x, y } = this._proj(p.alt, p.az, cx, cy, r, h);
+        ctx.fillText(String(p.hour), x + 2, y - 1);
+      });
+    }
+
+    // Current sun position on dome (drawn over arc)
+    if (state.sun.azimuth !== null && state.sun.elevation > -3) {
+      const { x, y } = this._proj(state.sun.elevation, state.sun.azimuth, cx, cy, r, h);
+      ctx.font         = '16px serif';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = '#ffffff';
+      ctx.fillText('☀', x, y);
+    }
+
     // Moon
     if (moon && moon.alt > -3) {
       const { x, y } = this._proj(moon.alt, moon.az, cx, cy, r, h);
@@ -888,6 +948,203 @@ const skyChartModule = {
     ctx.stroke();
 
     ctx.restore();
+  },
+};
+
+
+// ================================================================
+// AR OVERLAY MODULE
+// Projects sun/moon paths onto the live camera feed.
+//
+// Coordinate pipeline:
+//   GPS + SunCalc → alt/az at 10-min intervals → screen x,y via:
+//   dAz = targetAz - cameraAz  (from compass heading)
+//   dAlt = targetAlt - cameraAlt  (from device tilt: 90° - beta)
+//   x = W/2 + (dAz  / FOV_H) * W   (equirectangular approximation)
+//   y = H/2 - (dAlt / FOV_V) * H
+// ================================================================
+const arOverlayModule = {
+
+  _canvas:      null,
+  _ctx:         null,
+  _sunPath:     [],
+  _lastCompute: 0,
+  _COMPUTE_MS:  300_000,  // recompute sun arc every 5 min (arc is slow-changing)
+
+  _FOV_H: 55,   // horizontal FOV in portrait (degrees) — typical for phone cameras
+  _FOV_V: 70,   // vertical FOV in portrait
+
+  init() {
+    this._canvas = document.getElementById('ar-canvas');
+    if (!this._canvas) return;
+    this._ctx = this._canvas.getContext('2d');
+    const tick = () => { this._draw(); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  },
+
+  update(lat, lng) {
+    const now = Date.now();
+    if (now - this._lastCompute < this._COMPUTE_MS) return;
+    this._lastCompute = now;
+    this._recompute(lat, lng);
+  },
+
+  refresh() {
+    this._lastCompute = 0;
+    if (state.coords) this._recompute(state.coords.latitude, state.coords.longitude);
+  },
+
+  _recompute(lat, lng) {
+    if (typeof SunCalc === 'undefined') return;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const path  = [];
+    for (let m = 0; m < 1440; m += 10) {
+      const t   = new Date(today.getTime() + m * 60_000);
+      const pos = SunCalc.getPosition(t, lat, lng);
+      path.push({
+        alt:  pos.altitude * 180 / Math.PI,
+        az:   (pos.azimuth * 180 / Math.PI + 180 + 360) % 360,
+        hour: t.getHours(),
+        min:  t.getMinutes(),
+      });
+    }
+    this._sunPath = path;
+  },
+
+  _proj(alt, az, camAlt, camAz, W, H) {
+    let dAz = az - camAz;
+    if (dAz >  180) dAz -= 360;
+    if (dAz < -180) dAz += 360;
+    const dAlt = alt - camAlt;
+    return {
+      x:       W / 2 + (dAz  / this._FOV_H) * W,
+      y:       H / 2 - (dAlt / this._FOV_V) * H,
+      inFrame: Math.abs(dAz) < this._FOV_H * 0.58 && Math.abs(dAlt) < this._FOV_V * 0.58,
+    };
+  },
+
+  _draw() {
+    const canvas = this._canvas;
+    const ctx    = this._ctx;
+    if (!canvas || !ctx || !state.permissionsGranted) return;
+
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width  = W;
+      canvas.height = H;
+    }
+
+    ctx.clearRect(0, 0, W, H);
+
+    if (!state.coords || this._sunPath.length === 0) return;
+
+    const camAz  = state.heading ?? 0;
+    const camAlt = state.tilt    ?? 0;  // 0 = horizontal (phone upright)
+
+    // ── Sun path arc ─────────────────────────────────────────────
+    ctx.save();
+    ctx.strokeStyle = 'rgba(251,191,36,0.75)';
+    ctx.lineWidth   = 2.5;
+    ctx.setLineDash([8, 5]);
+    ctx.lineCap     = 'round';
+    ctx.beginPath();
+    let pen = false;
+    this._sunPath.forEach(p => {
+      const { x, y, inFrame } = this._proj(p.alt, p.az, camAlt, camAz, W, H);
+      if (inFrame) {
+        if (pen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); pen = true; }
+      } else {
+        pen = false;
+      }
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Hour tick marks + labels
+    this._sunPath.filter(p => p.min === 0 && p.alt > 0).forEach(p => {
+      const { x, y, inFrame } = this._proj(p.alt, p.az, camAlt, camAz, W, H);
+      if (!inFrame) return;
+      // Dot
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(251,191,36,0.85)';
+      ctx.fill();
+      // Time label
+      const lbl = p.hour === 0 ? '12am' : p.hour < 12 ? `${p.hour}am`
+                : p.hour === 12 ? '12pm' : `${p.hour - 12}pm`;
+      ctx.fillStyle    = 'rgba(255,255,255,0.9)';
+      ctx.font         = 'bold 11px monospace';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'bottom';
+      // Small background pill for readability
+      const tw = ctx.measureText(lbl).width + 8;
+      ctx.fillStyle = 'rgba(0,0,0,0.45)';
+      ctx.beginPath();
+      const rx = x - tw / 2, ry = y - 20;
+      if (ctx.roundRect) { ctx.roundRect(rx, ry, tw, 14, 4); }
+      else               { ctx.rect(rx, ry, tw, 14); }
+      ctx.fill();
+      ctx.fillStyle = 'rgba(251,191,36,0.95)';
+      ctx.fillText(lbl, x, y - 8);
+    });
+
+    // ── Current sun ───────────────────────────────────────────────
+    if (state.sun.azimuth !== null && state.sun.elevation !== null) {
+      const sunAlt = state.sun.elevation;
+      const sunAz  = state.sun.azimuth;
+      const { x, y } = this._proj(sunAlt, sunAz, camAlt, camAz, W, H);
+
+      // Glow halo
+      if (sunAlt > 0) {
+        const glow = ctx.createRadialGradient(x, y, 8, x, y, 40);
+        glow.addColorStop(0, 'rgba(251,191,36,0.35)');
+        glow.addColorStop(1, 'rgba(251,191,36,0)');
+        ctx.beginPath();
+        ctx.arc(x, y, 40, 0, Math.PI * 2);
+        ctx.fillStyle = glow;
+        ctx.fill();
+      }
+
+      ctx.font         = '32px serif';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = '#ffffff';
+      ctx.fillText('☀', x, y);
+
+      if (sunAlt > 0) {
+        ctx.fillStyle    = 'rgba(251,191,36,0.9)';
+        ctx.font         = 'bold 11px monospace';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`${sunAlt.toFixed(0)}° ${this._toCardinal(sunAz)}`, x, y + 18);
+      }
+    }
+
+    // ── Moon ─────────────────────────────────────────────────────
+    if (state.moon.azimuth !== null && state.moon.elevation > -5) {
+      const { x, y, inFrame } = this._proj(
+        state.moon.elevation, state.moon.azimuth, camAlt, camAz, W, H
+      );
+      if (inFrame) {
+        ctx.font         = '28px serif';
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle    = '#ffffff';
+        ctx.fillText(state.moon.phaseEmoji ?? '🌙', x, y);
+        ctx.fillStyle    = 'rgba(200,200,220,0.85)';
+        ctx.font         = '10px monospace';
+        ctx.textBaseline = 'top';
+        ctx.fillText(`${state.moon.elevation.toFixed(0)}°`, x, y + 15);
+      }
+    }
+
+    ctx.restore();
+  },
+
+  _toCardinal(deg) {
+    const pts = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
+                 'S','SSW','SW','WSW','W','WNW','NW','NNW'];
+    return pts[Math.round(deg / 22.5) % 16];
   },
 };
 
@@ -1282,4 +1539,5 @@ window.App = {
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[App] Wilan Sun Tracker — ready. Waiting for user gesture to start sensors.');
   skyChartModule.init();
+  arOverlayModule.init();
 });
