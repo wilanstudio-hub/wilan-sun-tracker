@@ -272,12 +272,21 @@
           </div>
         </div>
 
+        <!-- Light Schedule (golden hour, blue hour, sunrise/set — populated by goldenHourModule) -->
+        <div id="light-schedule-section" class="hidden mb-3">
+          <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Light Schedule — Today</p>
+          <div id="light-schedule-row" class="flex gap-1.5 overflow-x-auto pb-1"
+               style="-ms-overflow-style:none; scrollbar-width:none;">
+            <!-- chips injected dynamically once GPS fix arrives -->
+          </div>
+        </div>
+
         <!-- Timestamp -->
         <p id="timestamp-display" class="text-slate-600 text-xs font-mono text-center mb-3 tabular-nums">
           --:--:-- --
         </p>
 
-        <!-- Save / Export CTA -->
+        <!-- Save CTA -->
         <button
           id="btn-save"
           class="w-full py-3.5 rounded-xl font-semibold text-sm text-slate-900
@@ -285,11 +294,11 @@
                  hover:from-amber-300 hover:to-orange-300
                  active:from-amber-500 active:to-orange-500 active:scale-95
                  transition-all duration-150 flex items-center justify-center gap-2
-                 shadow-lg shadow-amber-900/30"
+                 shadow-lg shadow-amber-900/30 disabled:opacity-50"
           onclick="window.App.saveLocation()"
         >
-          <span>💾</span>
-          <span>Save to Supabase &amp; Export to Notion / ClickUp</span>
+          <span id="save-btn-icon">💾</span>
+          <span id="save-btn-text">Save Location Scout</span>
         </button>
 
       </div>
@@ -303,6 +312,9 @@
 
   <!-- SunCalc — must load before app.js -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js"></script>
+
+  <!-- Supabase JS client — must load before app.js -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
   <script src="app.js"></script>
 

@@ -21,6 +21,22 @@
 
 
 // ================================================================
+// SUPABASE CONFIG
+// The publishable key is safe to ship in client-side code — RLS
+// on the database restricts what the anon role can read/write.
+// ================================================================
+const SUPABASE_URL = 'https://lcfuadtgmfcvmpepjdyi.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_dPwlThcVVsFb4rQtG6B26w_EH4QuWYy';
+
+// Lazy singleton — created on first save, not at page load
+let _db = null;
+function getDB() {
+  if (!_db) _db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  return _db;
+}
+
+
+// ================================================================
 // STATE
 // One flat object — mutated in place, read by uiModule to render.
 // ================================================================
@@ -72,6 +88,15 @@ const dom = {
   sunDirectionWrap:    document.getElementById('sun-direction-wrap'),
   sunArrow:            document.getElementById('sun-arrow'),
   sunDirectionLabel:   document.getElementById('sun-direction-label'),
+
+  // Light schedule
+  lightScheduleSection: document.getElementById('light-schedule-section'),
+  lightScheduleRow:     document.getElementById('light-schedule-row'),
+
+  // Save button
+  saveBtnIcon:          document.getElementById('save-btn-icon'),
+  saveBtnText:          document.getElementById('save-btn-text'),
+  btnSave:              document.getElementById('btn-save'),
 };
 
 
@@ -188,9 +213,10 @@ const gpsModule = {
     uiModule.setDot(dom.gpsDot, 'active');
     uiModule.updateGPS(state.coords);
 
-    // Trigger a sun position recalculation every time GPS updates.
-    // sunModule internally throttles this to avoid redundant work.
+    // Recalculate sun position and light schedule on every GPS update.
+    // Both modules throttle internally so rapid GPS ticks are cheap.
     sunModule.update(state.coords.latitude, state.coords.longitude);
+    goldenHourModule.update(state.coords.latitude, state.coords.longitude);
   },
 
   _onError(err) {
@@ -363,6 +389,31 @@ const sunModule = {
 
 
 // ================================================================
+// GOLDEN HOUR MODULE
+// Uses SunCalc.getTimes() to build the full day light schedule.
+// Called every time GPS updates; internally throttled to 1 min
+// (times only shift meaningfully when the date changes or you move
+// far enough to affect civil twilight — throttle keeps it cheap).
+// ================================================================
+const goldenHourModule = {
+
+  _INTERVAL_MS: 60_000,
+  _lastUpdate:  0,
+
+  update(lat, lng) {
+    const now = Date.now();
+    if (now - this._lastUpdate < this._INTERVAL_MS) return;
+    this._lastUpdate = now;
+
+    if (typeof SunCalc === 'undefined') return;
+
+    const times = SunCalc.getTimes(new Date(), lat, lng);
+    uiModule.updateLightSchedule(times);
+  },
+};
+
+
+// ================================================================
 // UI MODULE
 // All DOM mutations live here. Sensor modules call uiModule methods
 // and never touch the DOM directly — keeps concerns separated.
@@ -450,6 +501,52 @@ const uiModule = {
     dom.permissionError.classList.remove('hidden');
   },
 
+  // Build the day's light schedule chips from SunCalc.getTimes() output
+  updateLightSchedule(times) {
+    if (!dom.lightScheduleRow) return;
+
+    const now = new Date();
+
+    // The 7 key film-production events in chronological order
+    const events = [
+      { key: 'dawn',          label: 'DAWN',  icon: '🔵', color: 'text-sky-400'    },
+      { key: 'sunrise',       label: 'RISE',  icon: '🌅', color: 'text-orange-400' },
+      { key: 'goldenHourEnd', label: 'GLD↑',  icon: '✦',  color: 'text-amber-400'  },
+      { key: 'solarNoon',     label: 'NOON',  icon: '☀',  color: 'text-yellow-300' },
+      { key: 'goldenHour',    label: 'GLD↓',  icon: '✦',  color: 'text-amber-400'  },
+      { key: 'sunset',        label: 'SET',   icon: '🌇', color: 'text-orange-400' },
+      { key: 'dusk',          label: 'DUSK',  icon: '🔵', color: 'text-sky-400'    },
+    ];
+
+    // The "active" index is the last event whose time has already passed —
+    // i.e. the period we're currently inside.
+    let activeIdx = -1;
+    events.forEach((ev, i) => {
+      if (times[ev.key] instanceof Date && times[ev.key] <= now) activeIdx = i;
+    });
+
+    dom.lightScheduleRow.innerHTML = events.map(({ key, label, icon, color }, i) => {
+      const t       = times[key];
+      const timeStr = t instanceof Date
+        ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })
+        : '--:--';
+
+      const isPast   = activeIdx >= 0 && i < activeIdx;
+      const isActive = i === activeIdx;
+
+      const bg      = isActive ? 'bg-amber-900/60 border border-amber-600/50' : 'bg-slate-800/50';
+      const opacity = isPast   ? 'opacity-30' : '';
+
+      return `<div class="flex-shrink-0 flex flex-col items-center gap-0.5 px-2.5 py-2 rounded-lg ${bg} ${opacity} min-w-[56px]">
+        <span class="text-sm leading-none">${icon}</span>
+        <span class="text-[10px] font-semibold tracking-wide ${color}">${label}</span>
+        <span class="text-white font-mono text-[11px] tabular-nums">${timeStr}</span>
+      </div>`;
+    }).join('');
+
+    dom.lightScheduleSection.classList.remove('hidden');
+  },
+
   // Convert 0–360 degrees to a 16-point cardinal string
   _toCardinal(deg) {
     const pts = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
@@ -507,94 +604,81 @@ const saveModule = {
 
   async save() {
     if (!state.coords) {
-      alert('No GPS fix yet.\nWait for coordinates to appear, then try again.');
+      alert('No GPS fix yet.\nWait for the coordinates to appear, then try again.');
       return;
     }
 
-    // Canonical location record — maps 1:1 to a Supabase table row.
-    // Extend with any additional film metadata your production needs.
+    // Build the record — columns match the location_scouts table exactly
     const record = {
-      timestamp:         new Date().toISOString(),
       latitude:          state.coords.latitude,
       longitude:         state.coords.longitude,
       gps_accuracy_m:    Math.round(state.coords.accuracy),
-      compass_heading:   state.heading !== null ? Math.round(state.heading) : null,
+      compass_heading:   state.heading  !== null ? Math.round(state.heading)           : null,
       sun_azimuth_deg:   state.sun.azimuth   !== null ? +state.sun.azimuth.toFixed(2)   : null,
       sun_elevation_deg: state.sun.elevation !== null ? +state.sun.elevation.toFixed(2) : null,
-      // ── Add your production fields here: ──────────────────────
-      // scene_number:   null,
-      // shot_type:      null,   // 'wide' | 'medium' | 'close'
-      // notes:          null,
+      // Optional film metadata — populate these before calling save()
+      // or wire them to input fields in the UI:
       // production_name: null,
+      // scene_number:    null,
+      // shot_type:       null,  // 'wide' | 'medium' | 'close'
+      // notes:           null,
     };
 
-    console.log('[Save] Record:', record);
+    // Loading state
+    dom.btnSave.disabled       = true;
+    dom.saveBtnIcon.textContent = '⏳';
+    dom.saveBtnText.textContent = 'Saving…';
 
-    // ── SUPABASE BLOCK — uncomment after setup ───────────────────
-    //
-    // const SUPABASE_URL      = 'https://YOUR_PROJECT.supabase.co';
-    // const SUPABASE_ANON_KEY = 'YOUR_ANON_KEY';
-    //
-    // const { createClient } = window.supabase;
-    // const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    //
-    // const { error: dbError } = await db
-    //   .from('location_scouts')
-    //   .insert(record);
-    //
-    // if (dbError) throw new Error(`Supabase: ${dbError.message}`);
-    // console.log('[Save] Saved to Supabase.');
-
-    // ── NOTION BLOCK — uncomment after setting up a proxy ────────
-    //
-    // const NOTION_TOKEN       = 'YOUR_INTEGRATION_TOKEN';
-    // const NOTION_DATABASE_ID = 'YOUR_DATABASE_ID';
-    // const PROXY_URL          = '/api/notion-proxy'; // your serverless function
-    //
-    // await fetch(PROXY_URL, {
-    //   method:  'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify({
-    //     parent: { database_id: NOTION_DATABASE_ID },
-    //     properties: {
-    //       Name:      { title:  [{ text: { content: `Scout — ${record.timestamp}` } }] },
-    //       Latitude:  { number: record.latitude },
-    //       Longitude: { number: record.longitude },
-    //       // ... map remaining fields to your Notion schema
-    //     },
-    //   }),
-    // });
-    // console.log('[Save] Exported to Notion.');
-
-    // ── CLICKUP BLOCK — uncomment after setup ────────────────────
-    //
-    // const CLICKUP_API_KEY = 'YOUR_API_KEY';
-    // const CLICKUP_LIST_ID = 'YOUR_LIST_ID';
-    //
-    // await fetch(`https://api.clickup.com/api/v2/list/${CLICKUP_LIST_ID}/task`, {
-    //   method: 'POST',
-    //   headers: {
-    //     'Authorization': CLICKUP_API_KEY,
-    //     'Content-Type':  'application/json',
-    //   },
-    //   body: JSON.stringify({
-    //     name:        `Location Scout — ${record.timestamp}`,
-    //     description: JSON.stringify(record, null, 2),
-    //   }),
-    // });
-    // console.log('[Save] Exported to ClickUp.');
-
-    // ── Temporary feedback until integrations are live ───────────
     try {
-      await navigator.clipboard.writeText(JSON.stringify(record, null, 2));
-      alert(
-        '✅ Location record copied to clipboard!\n\n' +
-        'Supabase / Notion / ClickUp integrations are ready to activate.\n' +
-        'See the placeholder blocks in saveModule inside app.js.'
-      );
-    } catch {
-      // Clipboard API unavailable (HTTP context, etc.)
-      alert('Location record:\n\n' + JSON.stringify(record, null, 2));
+      // ── Supabase insert ─────────────────────────────────────────
+      const { data, error } = await getDB()
+        .from('location_scouts')
+        .insert(record)
+        .select('id, created_at')
+        .single();
+
+      if (error) throw new Error(error.message);
+
+      console.log('[Save] Saved to Supabase:', data.id);
+
+      dom.saveBtnIcon.textContent = '✅';
+      dom.saveBtnText.textContent = 'Saved!';
+
+      // ── NOTION PLACEHOLDER ──────────────────────────────────────
+      // Notion's API blocks CORS, so you need a thin proxy (e.g. a
+      // Supabase Edge Function). Uncomment once the proxy is live:
+      //
+      // await fetch('/api/notion-proxy', {
+      //   method:  'POST',
+      //   headers: { 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({
+      //     scout_id: data.id,
+      //     ...record,
+      //   }),
+      // });
+
+      // ── CLICKUP PLACEHOLDER ─────────────────────────────────────
+      // ClickUp allows direct browser requests — just supply keys:
+      //
+      // const CLICKUP_API_KEY = 'YOUR_KEY';
+      // const CLICKUP_LIST_ID = 'YOUR_LIST_ID';
+      // await fetch(`https://api.clickup.com/api/v2/list/${CLICKUP_LIST_ID}/task`, {
+      //   method: 'POST',
+      //   headers: { 'Authorization': CLICKUP_API_KEY, 'Content-Type': 'application/json' },
+      //   body: JSON.stringify({ name: `Scout — ${data.created_at}`, description: JSON.stringify(record, null, 2) }),
+      // });
+
+    } catch (err) {
+      console.error('[Save] Failed:', err.message);
+      dom.saveBtnIcon.textContent = '❌';
+      dom.saveBtnText.textContent = 'Save failed — tap to retry';
+    } finally {
+      // Re-enable button after 2.5 s regardless of outcome
+      setTimeout(() => {
+        dom.btnSave.disabled        = false;
+        dom.saveBtnIcon.textContent = '💾';
+        dom.saveBtnText.textContent = 'Save Location Scout';
+      }, 2_500);
     }
   },
 };
