@@ -44,11 +44,22 @@ const state = {
   coords:   null,    // { latitude, longitude, accuracy } from GPS
   heading:  null,    // 0–360 degrees, 0 = North, from device compass
   sun: {
-    azimuth:   null, // 0–360 degrees from North (computed by SunCalc)
-    elevation: null, // degrees above horizon, negative = below horizon
+    azimuth:   null, // 0–360 degrees from North (SunCalc)
+    elevation: null, // degrees above horizon
   },
+  moon: {
+    azimuth:      null,
+    elevation:    null,
+    illumination: null, // 0–1 fraction
+    phase:        null, // 0–1 (0/1 = new, 0.5 = full)
+    phaseName:    null,
+    phaseEmoji:   null,
+    rise:         null, // Date | null
+    set:          null,
+  },
+  planets:          [],   // [{ name, azimuth, elevation }] — above horizon only
   gpsWatchId:       null,
-  compassHandler:   null,  // stored so we can removeEventListener later
+  compassHandler:   null,
   permissionsGranted: false,
 };
 
@@ -88,6 +99,24 @@ const dom = {
   sunDirectionWrap:    document.getElementById('sun-direction-wrap'),
   sunArrow:            document.getElementById('sun-arrow'),
   sunDirectionLabel:   document.getElementById('sun-direction-label'),
+
+  // Moon data
+  moonAzimuthDisplay:   document.getElementById('moon-azimuth-display'),
+  moonElevationDisplay: document.getElementById('moon-elevation-display'),
+  moonPhaseEmoji:       document.getElementById('moon-phase-emoji'),
+  moonPhaseName:        document.getElementById('moon-phase-name'),
+  moonIllumination:     document.getElementById('moon-illumination'),
+  moonRiseDisplay:      document.getElementById('moon-rise-display'),
+  moonSetDisplay:       document.getElementById('moon-set-display'),
+
+  // Moon AR arrow
+  moonDirectionWrap:    document.getElementById('moon-direction-wrap'),
+  moonArrow:            document.getElementById('moon-arrow'),
+  moonDirectionLabel:   document.getElementById('moon-direction-label'),
+
+  // Planets
+  planetsSection:       document.getElementById('planets-section'),
+  planetsList:          document.getElementById('planets-list'),
 
   // Light schedule
   lightScheduleSection: document.getElementById('light-schedule-section'),
@@ -213,10 +242,13 @@ const gpsModule = {
     uiModule.setDot(dom.gpsDot, 'active');
     uiModule.updateGPS(state.coords);
 
-    // Recalculate sun position and light schedule on every GPS update.
-    // Both modules throttle internally so rapid GPS ticks are cheap.
-    sunModule.update(state.coords.latitude, state.coords.longitude);
-    goldenHourModule.update(state.coords.latitude, state.coords.longitude);
+    // Recalculate all celestial data on every GPS update.
+    // Every module throttles internally — rapid GPS ticks are cheap.
+    const { latitude: lat, longitude: lng } = state.coords;
+    sunModule.update(lat, lng);
+    moonModule.update(lat, lng);
+    planetsModule.update(lat, lng);
+    goldenHourModule.update(lat, lng);
   },
 
   _onError(err) {
@@ -321,10 +353,9 @@ const compassModule = {
       uiModule.setDot(dom.compassDot, 'active');
       uiModule.updateCompass(heading);
 
-      // Keep the sun direction arrow aligned to the new heading
-      if (state.sun.azimuth !== null) {
-        uiModule.updateSunArrow(state.sun.azimuth, heading);
-      }
+      // Keep both AR arrows aligned to the new heading
+      if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth, heading);
+      if (state.moon.azimuth !== null) uiModule.updateMoonArrow(state.moon.azimuth, heading);
     };
 
     // Register on both event types; the flag above handles deduplication.
@@ -409,6 +440,152 @@ const goldenHourModule = {
 
     const times = SunCalc.getTimes(new Date(), lat, lng);
     uiModule.updateLightSchedule(times);
+  },
+};
+
+
+// ================================================================
+// MOON PHASE HELPERS
+// ================================================================
+function moonPhaseEmoji(phase) {
+  // phase 0–1: 0 = new, 0.25 = first quarter, 0.5 = full, 0.75 = last quarter
+  if (phase < 0.0625) return '🌑';
+  if (phase < 0.1875) return '🌒';
+  if (phase < 0.3125) return '🌓';
+  if (phase < 0.4375) return '🌔';
+  if (phase < 0.5625) return '🌕';
+  if (phase < 0.6875) return '🌖';
+  if (phase < 0.8125) return '🌗';
+  if (phase < 0.9375) return '🌘';
+  return '🌑';
+}
+
+function moonPhaseName(phase) {
+  if (phase < 0.0625) return 'New Moon';
+  if (phase < 0.1875) return 'Waxing Crescent';
+  if (phase < 0.3125) return 'First Quarter';
+  if (phase < 0.4375) return 'Waxing Gibbous';
+  if (phase < 0.5625) return 'Full Moon';
+  if (phase < 0.6875) return 'Waning Gibbous';
+  if (phase < 0.8125) return 'Last Quarter';
+  if (phase < 0.9375) return 'Waning Crescent';
+  return 'New Moon';
+}
+
+function fmtTime(date) {
+  if (!date || !(date instanceof Date) || isNaN(date)) return '--:--';
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true });
+}
+
+
+// ================================================================
+// MOON MODULE
+// Uses SunCalc (already loaded) for position, illumination, and
+// rise/set times. Throttled to 30 s — the moon moves ~0.5°/min.
+// ================================================================
+const moonModule = {
+
+  _INTERVAL_MS: 30_000,
+  _lastUpdate:  0,
+
+  update(lat, lng) {
+    const now = Date.now();
+    if (now - this._lastUpdate < this._INTERVAL_MS) return;
+    this._lastUpdate = now;
+
+    if (typeof SunCalc === 'undefined') return;
+
+    const date  = new Date();
+
+    // Position
+    const pos          = SunCalc.getMoonPosition(date, lat, lng);
+    const azimuthDeg   = (pos.azimuth * 180 / Math.PI + 180 + 360) % 360;
+    const elevationDeg = pos.altitude * 180 / Math.PI;
+
+    // Illumination + phase
+    const illum  = SunCalc.getMoonIllumination(date);
+
+    // Rise / set (SunCalc searches within the current day)
+    const times  = SunCalc.getMoonTimes(date, lat, lng);
+
+    state.moon = {
+      azimuth:      azimuthDeg,
+      elevation:    elevationDeg,
+      illumination: illum.fraction,
+      phase:        illum.phase,
+      phaseName:    moonPhaseName(illum.phase),
+      phaseEmoji:   moonPhaseEmoji(illum.phase),
+      rise:         times.rise  || null,
+      set:          times.set   || null,
+    };
+
+    uiModule.updateMoon(state.moon);
+
+    // Rotate the AR arrow now that we have position + heading
+    if (state.heading !== null) {
+      uiModule.updateMoonArrow(azimuthDeg, state.heading);
+    }
+  },
+};
+
+
+// ================================================================
+// PLANETS MODULE
+// Uses astronomy-engine to find visible planets above the horizon.
+// Shows Mercury, Venus, Mars, Jupiter, Saturn.
+// Throttled to 60 s — planet positions are slow-moving.
+// ================================================================
+const planetsModule = {
+
+  _INTERVAL_MS: 60_000,
+  _lastUpdate:  0,
+
+  _BODIES: [
+    { name: 'Mercury', icon: '☿', color: 'text-slate-300' },
+    { name: 'Venus',   icon: '♀', color: 'text-yellow-200' },
+    { name: 'Mars',    icon: '♂', color: 'text-red-400'   },
+    { name: 'Jupiter', icon: '♃', color: 'text-orange-200' },
+    { name: 'Saturn',  icon: '♄', color: 'text-amber-200' },
+  ],
+
+  update(lat, lng) {
+    const now = Date.now();
+    if (now - this._lastUpdate < this._INTERVAL_MS) return;
+    this._lastUpdate = now;
+
+    if (typeof Astronomy === 'undefined') return;
+
+    const date     = new Date();
+    const observer = new Astronomy.Observer(lat, lng, 0);
+
+    const visible = [];
+
+    for (const body of this._BODIES) {
+      try {
+        // Equatorial coordinates (true of date, with aberration)
+        const equ = Astronomy.Equator(Astronomy.Body[body.name], date, observer, true, true);
+        // Convert to local horizontal coordinates
+        const hor = Astronomy.Horizon(date, observer, equ.ra, equ.dec, 'normal');
+
+        if (hor.altitude > 0) {
+          visible.push({
+            name:      body.name,
+            icon:      body.icon,
+            color:     body.color,
+            azimuth:   hor.azimuth,
+            elevation: hor.altitude,
+          });
+        }
+      } catch {
+        // astronomy-engine throws if a body calculation fails (rare edge case)
+      }
+    }
+
+    // Sort by elevation descending (highest in sky first)
+    visible.sort((a, b) => b.elevation - a.elevation);
+
+    state.planets = visible;
+    uiModule.updatePlanets(visible);
   },
 };
 
@@ -499,6 +676,48 @@ const uiModule = {
   showPermError(msg) {
     dom.permissionError.textContent = msg;
     dom.permissionError.classList.remove('hidden');
+  },
+
+  // Moon position, phase, and rise/set
+  updateMoon({ azimuth, elevation, illumination, phaseName, phaseEmoji, rise, set }) {
+    dom.moonAzimuthDisplay.textContent   = `${azimuth.toFixed(1)}°`;
+    dom.moonElevationDisplay.textContent = `${elevation.toFixed(1)}°`;
+    dom.moonPhaseEmoji.textContent       = phaseEmoji;
+    dom.moonPhaseName.textContent        = phaseName;
+    dom.moonIllumination.textContent     = `${Math.round(illumination * 100)} % illuminated`;
+    dom.moonRiseDisplay.textContent      = `↑ ${fmtTime(rise)}`;
+    dom.moonSetDisplay.textContent       = `↓ ${fmtTime(set)}`;
+  },
+
+  // Rotate moon AR arrow toward the moon's position relative to camera heading
+  updateMoonArrow(moonAzimuth, deviceHeading) {
+    if (moonAzimuth === null || deviceHeading === null) return;
+    const relative = (moonAzimuth - deviceHeading + 360) % 360;
+    dom.moonArrow.style.transform       = `rotate(${relative}deg)`;
+    dom.moonDirectionLabel.textContent  = `${this._toCardinal(moonAzimuth)}  ${moonAzimuth.toFixed(0)}°`;
+    dom.moonDirectionWrap.style.opacity = '1';
+  },
+
+  // Render visible planet rows
+  updatePlanets(planets) {
+    if (planets.length === 0) {
+      dom.planetsSection.classList.add('hidden');
+      return;
+    }
+
+    dom.planetsList.innerHTML = planets.map(({ name, icon, color, azimuth, elevation }) => {
+      const cardinal = this._toCardinal(azimuth);
+      const lowAlert = elevation < 10 ? ' · low on horizon' : '';
+      return `<div class="flex items-center gap-3 bg-slate-800/50 rounded-lg px-3 py-2">
+        <span class="${color} font-mono text-base w-5 text-center">${icon}</span>
+        <span class="text-slate-200 text-sm font-medium w-16">${name}</span>
+        <span class="text-slate-400 font-mono text-xs tabular-nums">↑ ${elevation.toFixed(1)}°</span>
+        <span class="text-slate-400 font-mono text-xs tabular-nums">→ ${azimuth.toFixed(1)}°</span>
+        <span class="text-slate-500 text-xs">${cardinal}${lowAlert}</span>
+      </div>`;
+    }).join('');
+
+    dom.planetsSection.classList.remove('hidden');
   },
 
   // Build the day's light schedule chips from SunCalc.getTimes() output

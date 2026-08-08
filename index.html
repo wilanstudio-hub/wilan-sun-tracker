@@ -65,8 +65,8 @@
       50%       { opacity: 0.4; }
     }
 
-    /* ── Sun direction arrow: smooth rotation transition ─────────── */
-    #sun-arrow {
+    /* ── Sun + Moon direction arrows: smooth rotation ───────────── */
+    #sun-arrow, #moon-arrow {
       display: inline-block;
       transition: transform 0.6s ease-out;
       transform-origin: center;
@@ -173,14 +173,21 @@
       </div>
     </div>
 
-    <!-- Sun Direction Indicator (hidden until SunCalc provides data) -->
-    <div
-      id="sun-direction-wrap"
-      class="absolute bottom-48 flex flex-col items-center opacity-0 transition-opacity duration-700"
-    >
-      <!-- Arrow rotates to point toward the sun's azimuth relative to heading -->
-      <span id="sun-arrow" class="text-2xl text-amber-400 leading-none">☀</span>
-      <p id="sun-direction-label" class="text-amber-300/80 text-xs font-mono mt-1 tracking-wider">--</p>
+    <!-- Sun + Moon Direction Indicators (appear once GPS + SunCalc are active) -->
+    <div class="absolute bottom-48 flex items-end gap-10">
+
+      <!-- Sun: rotates to point toward sun azimuth relative to device heading -->
+      <div id="sun-direction-wrap" class="flex flex-col items-center opacity-0 transition-opacity duration-700">
+        <span id="sun-arrow" class="text-2xl text-amber-400 leading-none">☀</span>
+        <p id="sun-direction-label" class="text-amber-300/80 text-xs font-mono mt-1 tracking-wider">--</p>
+      </div>
+
+      <!-- Moon: rotates to point toward moon azimuth relative to device heading -->
+      <div id="moon-direction-wrap" class="flex flex-col items-center opacity-0 transition-opacity duration-700">
+        <span id="moon-arrow" class="text-2xl text-slate-200 leading-none">🌙</span>
+        <p id="moon-direction-label" class="text-slate-300/80 text-xs font-mono mt-1 tracking-wider">--</p>
+      </div>
+
     </div>
 
     <!-- Compass Mini-Widget (top-right of viewfinder) -->
@@ -260,8 +267,8 @@
           </div>
         </div>
 
-        <!-- Sun Position row (populated by SunCalc — see app.js sunModule) -->
-        <div class="grid grid-cols-2 gap-2 mb-3">
+        <!-- Sun Position row -->
+        <div class="grid grid-cols-2 gap-2 mb-2">
           <div class="bg-amber-950/40 border border-amber-800/30 rounded-xl p-3">
             <p class="text-amber-500/80 text-xs uppercase tracking-widest mb-1">Sun Azimuth</p>
             <p id="sun-azimuth-display"   class="text-amber-300 font-mono text-sm tabular-nums">---°</p>
@@ -272,12 +279,45 @@
           </div>
         </div>
 
+        <!-- Moon Position row -->
+        <div class="grid grid-cols-2 gap-2 mb-2">
+          <div class="bg-slate-800/50 border border-slate-600/25 rounded-xl p-3">
+            <p class="text-slate-400 text-xs uppercase tracking-widest mb-1">Moon Azimuth</p>
+            <p id="moon-azimuth-display"   class="text-slate-200 font-mono text-sm tabular-nums">---°</p>
+          </div>
+          <div class="bg-slate-800/50 border border-slate-600/25 rounded-xl p-3">
+            <p class="text-slate-400 text-xs uppercase tracking-widest mb-1">Moon Elevation</p>
+            <p id="moon-elevation-display" class="text-slate-200 font-mono text-sm tabular-nums">---°</p>
+          </div>
+        </div>
+
+        <!-- Moon Phase card -->
+        <div class="bg-slate-800/40 rounded-xl p-3 mb-3 flex items-center gap-3">
+          <span id="moon-phase-emoji" class="text-3xl leading-none">🌑</span>
+          <div class="flex-1 min-w-0">
+            <p id="moon-phase-name"   class="text-slate-200 text-sm font-medium leading-tight">--</p>
+            <p id="moon-illumination" class="text-slate-500 text-xs mt-0.5">-- % illuminated</p>
+          </div>
+          <div class="text-right shrink-0">
+            <p id="moon-rise-display" class="text-slate-400 text-xs font-mono tabular-nums">↑ --:--</p>
+            <p id="moon-set-display"  class="text-slate-400 text-xs font-mono tabular-nums">↓ --:--</p>
+          </div>
+        </div>
+
         <!-- Light Schedule (golden hour, blue hour, sunrise/set — populated by goldenHourModule) -->
         <div id="light-schedule-section" class="hidden mb-3">
           <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Light Schedule — Today</p>
           <div id="light-schedule-row" class="flex gap-1.5 overflow-x-auto pb-1"
                style="-ms-overflow-style:none; scrollbar-width:none;">
             <!-- chips injected dynamically once GPS fix arrives -->
+          </div>
+        </div>
+
+        <!-- Visible Planets (populated by planetsModule once GPS arrives) -->
+        <div id="planets-section" class="hidden mb-3">
+          <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Visible Planets</p>
+          <div id="planets-list" class="grid grid-cols-1 gap-1.5">
+            <!-- chips injected dynamically -->
           </div>
         </div>
 
@@ -310,10 +350,13 @@
        SCRIPTS
   ═══════════════════════════════════════════════════════════════ -->
 
-  <!-- SunCalc — must load before app.js -->
+  <!-- SunCalc: sun + moon position, times, phases -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/suncalc/1.9.0/suncalc.min.js"></script>
 
-  <!-- Supabase JS client — must load before app.js -->
+  <!-- Astronomy Engine: planet positions (Venus, Mars, Jupiter, Saturn, Mercury) -->
+  <script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2/astronomy.min.js"></script>
+
+  <!-- Supabase JS client -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
   <script src="app.js"></script>
