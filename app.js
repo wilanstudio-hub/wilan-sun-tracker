@@ -118,6 +118,7 @@ const dom = {
   // Planets (Sky tab)
   planetsList:          document.getElementById('planets-list'),
   planetsEmpty:         document.getElementById('planets-empty'),
+  skyCanvas:            document.getElementById('sky-canvas'),
 
   // Light schedule (Scout tab)
   lightScheduleSection: document.getElementById('light-schedule-section'),
@@ -154,6 +155,7 @@ const tabModule = {
       // Tab panel — show / hide
       document.getElementById(`tab-panel-${tab}`).classList.toggle('hidden', !isActive);
     });
+    if (name === 'sky') skyChartModule.refresh();
   },
 };
 
@@ -278,6 +280,7 @@ const gpsModule = {
     moonModule.update(lat, lng);
     planetsModule.update(lat, lng);
     goldenHourModule.update(lat, lng);
+    skyChartModule.update(lat, lng);
   },
 
   _onError(err) {
@@ -615,6 +618,276 @@ const planetsModule = {
 
     state.planets = visible;
     uiModule.updatePlanets(visible);
+  },
+};
+
+
+// ================================================================
+// SKY CHART MODULE
+// Renders a Stellarium-like interactive sky dome on <canvas id="sky-canvas">.
+//
+// Coordinate pipeline:
+//   GPS + time → Local Sidereal Time → RA/Dec → Alt/Az
+//   Alt/Az + compass heading → canvas x,y  (heading faces canvas top)
+//
+// Layers: space gradient → altitude rings → constellation lines
+//         → stars (coloured, sized, glow) → labels → moon → planets
+//         → horizon ring → cardinal labels
+// ================================================================
+const skyChartModule = {
+
+  _canvas:      null,
+  _ctx:         null,
+  _plotData:    null,
+  _lastCompute: 0,
+  _COMPUTE_MS:  5_000,
+
+  _SPECTRAL: {
+    O: '#9bb0ff', B: '#aabfff', A: '#ffffff',
+    F: '#fff4ea', G: '#ffd27f', K: '#ffb347', M: '#ff6b6b',
+  },
+
+  init() {
+    this._canvas = document.getElementById('sky-canvas');
+    if (!this._canvas) return;
+    this._ctx = this._canvas.getContext('2d');
+    const tick = () => { this._draw(); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  },
+
+  update(lat, lng) {
+    const now = Date.now();
+    if (now - this._lastCompute < this._COMPUTE_MS) return;
+    this._lastCompute = now;
+    this._recompute(lat, lng);
+  },
+
+  refresh() {
+    this._lastCompute = 0;
+    if (state.coords) this._recompute(state.coords.latitude, state.coords.longitude);
+  },
+
+  _recompute(lat, lng) {
+    if (typeof STAR_CATALOG === 'undefined' || typeof CONST_LINES === 'undefined') return;
+    const date = new Date();
+    const lst  = this._getLST(lng, date);
+
+    const stars = STAR_CATALOG.map(([ra, dec, mag, spec, name]) => ({
+      ...this._raDecToAltAz(ra, dec, lat, lst), mag, spec, name,
+    }));
+
+    const constLines = CONST_LINES.map(([, segs]) =>
+      segs.map(pts => pts.map(([ra, dec]) => this._raDecToAltAz(ra, dec, lat, lst)))
+    );
+
+    const moon = (state.moon.azimuth !== null) ? {
+      alt: state.moon.elevation, az: state.moon.azimuth,
+      emoji: state.moon.phaseEmoji ?? '🌙',
+    } : null;
+
+    const planets = state.planets.map(p => ({
+      alt: p.elevation, az: p.azimuth, icon: p.icon, name: p.name,
+    }));
+
+    this._plotData = { stars, constLines, moon, planets };
+  },
+
+  _getLST(lng_deg, date) {
+    const JD   = date.getTime() / 86400000 + 2440587.5;
+    const GMST = (280.46061837 + 360.98564736629 * (JD - 2451545.0)) % 360;
+    return ((GMST + lng_deg) % 360 + 360) % 360;
+  },
+
+  _raDecToAltAz(ra_h, dec_deg, lat_deg, lst_deg) {
+    const D   = Math.PI / 180;
+    const ha  = ((lst_deg - ra_h * 15) % 360 + 360) % 360 * D;
+    const dec = dec_deg * D;
+    const lat = lat_deg * D;
+
+    const sinAlt = Math.sin(dec) * Math.sin(lat) + Math.cos(dec) * Math.cos(lat) * Math.cos(ha);
+    const alt    = Math.asin(Math.max(-1, Math.min(1, sinAlt))) / D;
+
+    const cosAz = (Math.sin(dec) - Math.sin(alt * D) * Math.sin(lat)) /
+                  (Math.cos(alt * D) * Math.cos(lat));
+    const az0   = Math.acos(Math.max(-1, Math.min(1, cosAz))) / D;
+    const az    = Math.sin(ha) > 0 ? 360 - az0 : az0;
+
+    return { alt, az };
+  },
+
+  _proj(alt, az, cx, cy, r, heading) {
+    const a = ((az - heading) % 360 + 360) % 360 * Math.PI / 180;
+    const d = (90 - alt) / 90 * r;
+    return { x: cx + d * Math.sin(a), y: cy - d * Math.cos(a) };
+  },
+
+  _magR(mag) { return Math.max(1.0, 9.64 - 1.81 * mag); },
+
+  _draw() {
+    const canvas = this._canvas;
+    const ctx    = this._ctx;
+    if (!canvas || !ctx) return;
+
+    const dpr     = window.devicePixelRatio || 1;
+    const cssSize = canvas.offsetWidth;
+    if (cssSize < 4) return;
+
+    const pxSize = Math.round(cssSize * dpr);
+    if (canvas.width !== pxSize) {
+      canvas.width  = pxSize;
+      canvas.height = pxSize;
+    }
+
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    const cx = cssSize / 2;
+    const cy = cssSize / 2;
+    const r  = cx - 6;
+    const h  = state.heading ?? 0;
+
+    // Deep space background
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    bg.addColorStop(0,   '#06111f');
+    bg.addColorStop(0.7, '#030b16');
+    bg.addColorStop(1,   '#020609');
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = bg;
+    ctx.fill();
+
+    // Clip to dome circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+
+    if (!this._plotData) {
+      ctx.fillStyle    = '#475569';
+      ctx.font         = '11px monospace';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Waiting for GPS…', cx, cy);
+      ctx.restore();
+      return;
+    }
+
+    const { stars, constLines, moon, planets } = this._plotData;
+
+    // Altitude rings at 30° and 60°
+    ctx.strokeStyle = 'rgba(51,65,85,0.25)';
+    ctx.lineWidth   = 0.5;
+    [30, 60].forEach(alt => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, (90 - alt) / 90 * r, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    // Constellation lines
+    ctx.strokeStyle = 'rgba(99,102,241,0.3)';
+    ctx.lineWidth   = 0.7;
+    constLines.forEach(segs => {
+      segs.forEach(pts => {
+        if (!pts.some(p => p.alt > -8)) return;
+        ctx.beginPath();
+        let pen = false;
+        pts.forEach(p => {
+          if (p.alt < -20) { pen = false; return; }
+          const { x, y } = this._proj(p.alt, p.az, cx, cy, r, h);
+          if (pen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); pen = true; }
+        });
+        ctx.stroke();
+      });
+    });
+
+    // Stars
+    const labeled = new Set();
+    stars.forEach(({ alt, az, mag, spec, name }) => {
+      if (alt < -3) return;
+      const { x, y } = this._proj(alt, az, cx, cy, r, h);
+      const rad   = this._magR(mag);
+      const color = this._SPECTRAL[spec] ?? '#ffffff';
+
+      if (mag < 2.0) {
+        const g = ctx.createRadialGradient(x, y, 0, x, y, rad * 4);
+        g.addColorStop(0, color + 'aa');
+        g.addColorStop(1, color + '00');
+        ctx.beginPath();
+        ctx.arc(x, y, rad * 4, 0, Math.PI * 2);
+        ctx.fillStyle = g;
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(x, y, rad, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+
+      if (name && mag < 1.8 && alt > 5 && !labeled.has(name)) {
+        labeled.add(name);
+        ctx.fillStyle    = 'rgba(148,163,184,0.7)';
+        ctx.font         = '9px monospace';
+        ctx.textAlign    = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(name, x + rad + 2, y);
+      }
+    });
+
+    // Moon
+    if (moon && moon.alt > -3) {
+      const { x, y } = this._proj(moon.alt, moon.az, cx, cy, r, h);
+      ctx.font         = '18px serif';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = '#ffffff';
+      ctx.fillText(moon.emoji, x, y);
+    }
+
+    // Planets
+    planets.forEach(p => {
+      if (p.alt < -3) return;
+      const { x, y } = this._proj(p.alt, p.az, cx, cy, r, h);
+      ctx.font         = '13px serif';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = '#ffffff';
+      ctx.fillText(p.icon, x, y);
+      ctx.fillStyle    = 'rgba(148,163,184,0.65)';
+      ctx.font         = '8px monospace';
+      ctx.textBaseline = 'top';
+      ctx.fillText(p.name, x, y + 9);
+    });
+
+    // Remove clip, draw horizon ring and cardinal labels outside it
+    ctx.restore();
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(71,85,105,0.55)';
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ['N', 'E', 'S', 'W'].forEach((card, i) => {
+      const a  = ((i * 90 - h) % 360 + 360) % 360 * Math.PI / 180;
+      const lx = cx + (r + 12) * Math.sin(a);
+      const ly = cy - (r + 12) * Math.cos(a);
+      ctx.font      = 'bold 9px monospace';
+      ctx.fillStyle = card === 'N' ? 'rgba(251,191,36,0.9)' : 'rgba(148,163,184,0.65)';
+      ctx.fillText(card, lx, ly);
+    });
+
+    // Tick mark at top = device heading direction
+    ctx.strokeStyle = 'rgba(251,191,36,0.5)';
+    ctx.lineWidth   = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - r + 1);
+    ctx.lineTo(cx, cy - r + 9);
+    ctx.stroke();
+
+    ctx.restore();
   },
 };
 
@@ -1008,4 +1281,5 @@ window.App = {
 // ================================================================
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[App] Wilan Sun Tracker — ready. Waiting for user gesture to start sensors.');
+  skyChartModule.init();
 });

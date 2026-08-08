@@ -368,19 +368,15 @@
         <!-- ══ SKY TAB ════════════════════════════════════════ -->
         <div id="tab-panel-sky" class="hidden p-4 pt-3">
 
-          <!-- Planets -->
-          <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Visible Planets</p>
-          <div id="planets-list" class="space-y-1.5 mb-4">
-            <p id="planets-empty" class="text-slate-600 text-sm text-center py-3">Waiting for GPS fix…</p>
+          <!-- Sky dome canvas -->
+          <div style="position:relative;width:100%;max-width:220px;aspect-ratio:1;margin:0 auto 12px;">
+            <canvas id="sky-canvas" style="width:100%;height:100%;border-radius:9999px;display:block;"></canvas>
           </div>
 
-          <!-- Stars — placeholder -->
-          <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/30">
-            <p class="text-slate-400 text-xs uppercase tracking-widest mb-1.5">✦ Stars</p>
-            <p class="text-slate-600 text-xs leading-relaxed">
-              Full star catalog coming next — Sirius, Canopus, Southern Cross, Orion Belt and more,
-              with magnitude, rise/set times, and AR direction arrow for each.
-            </p>
+          <!-- Visible Planets -->
+          <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Visible Planets</p>
+          <div id="planets-list" class="space-y-1.5">
+            <p id="planets-empty" class="text-slate-600 text-sm text-center py-2">Waiting for GPS fix…</p>
           </div>
 
         </div>
@@ -403,6 +399,7 @@
   <!-- Supabase JS client -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
+  <script src="stars.js"></script>
   <script src="app.js"></script>
 
   <!-- Service Worker registration -->

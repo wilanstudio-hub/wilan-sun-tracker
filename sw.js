@@ -24,7 +24,7 @@
 // ── Cache identity ───────────────────────────────────────────────
 // Bump the version suffix (v1 → v2) whenever you change any file
 // in STATIC_ASSETS. Format: '<app-slug>-v<integer>'
-const CACHE_NAME = 'wilan-sun-tracker-v5';
+const CACHE_NAME = 'wilan-sun-tracker-v6';
 
 // ── App shell — files required for offline launch ────────────────
 // CDN resources (Tailwind, SunCalc) are NOT listed here by default.
@@ -36,6 +36,7 @@ const STATIC_ASSETS = [
   './',
   './index.html',
   './app.js',
+  './stars.js',
   './manifest.json',
   './sw.js',
   './icons/icon-192x192.png',
