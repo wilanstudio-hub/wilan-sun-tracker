@@ -238,108 +238,152 @@
       </div>
 
 
-      <!-- ── Section B: Live Data ─────────────────────────────────
+      <!-- ── Section B: Live Data (tabbed) ────────────────────────
            Hidden on load. Revealed after permissions are granted.
       ─────────────────────────────────────────────────────────── -->
-      <div id="data-section" class="hidden fade-slide-in p-4 pt-3">
+      <div id="data-section" class="hidden fade-slide-in">
 
-        <!-- GPS row -->
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <div class="bg-slate-800/60 rounded-xl p-3">
-            <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">Latitude</p>
-            <p id="lat-display"      class="text-white font-mono text-sm tabular-nums">--</p>
-          </div>
-          <div class="bg-slate-800/60 rounded-xl p-3">
-            <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">Longitude</p>
-            <p id="lng-display"      class="text-white font-mono text-sm tabular-nums">--</p>
-          </div>
+        <!-- Tab navigation bar -->
+        <div class="flex border-b border-slate-700/50">
+          <button id="tab-btn-scout"
+            class="flex-1 py-3 text-xs font-bold tracking-widest transition-colors duration-150
+                   text-amber-400 border-b-2 border-amber-400"
+            onclick="window.App.switchTab('scout')">☀ SCOUT</button>
+          <button id="tab-btn-moon"
+            class="flex-1 py-3 text-xs font-bold tracking-widest transition-colors duration-150
+                   text-slate-500 border-b-2 border-transparent"
+            onclick="window.App.switchTab('moon')">🌙 MOON</button>
+          <button id="tab-btn-sky"
+            class="flex-1 py-3 text-xs font-bold tracking-widest transition-colors duration-150
+                   text-slate-500 border-b-2 border-transparent"
+            onclick="window.App.switchTab('sky')">✦ SKY</button>
         </div>
 
-        <!-- Accuracy & Heading row -->
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <div class="bg-slate-800/60 rounded-xl p-3">
-            <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">GPS Accuracy</p>
-            <p id="accuracy-display" class="text-white font-mono text-sm tabular-nums">--</p>
+
+        <!-- ══ SCOUT TAB ══════════════════════════════════════ -->
+        <div id="tab-panel-scout" class="p-4 pt-3">
+
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div class="bg-slate-800/60 rounded-xl p-3">
+              <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">Latitude</p>
+              <p id="lat-display" class="text-white font-mono text-sm tabular-nums">--</p>
+            </div>
+            <div class="bg-slate-800/60 rounded-xl p-3">
+              <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">Longitude</p>
+              <p id="lng-display" class="text-white font-mono text-sm tabular-nums">--</p>
+            </div>
           </div>
-          <div class="bg-slate-800/60 rounded-xl p-3">
-            <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">Compass Heading</p>
-            <p id="heading-display"  class="text-white font-mono text-sm tabular-nums">---°</p>
+
+          <div class="grid grid-cols-2 gap-2 mb-2">
+            <div class="bg-slate-800/60 rounded-xl p-3">
+              <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">GPS Accuracy</p>
+              <p id="accuracy-display" class="text-white font-mono text-sm tabular-nums">--</p>
+            </div>
+            <div class="bg-slate-800/60 rounded-xl p-3">
+              <p class="text-slate-500 text-xs uppercase tracking-widest mb-1">Compass Heading</p>
+              <p id="heading-display" class="text-white font-mono text-sm tabular-nums">---°</p>
+            </div>
           </div>
+
+          <div class="grid grid-cols-2 gap-2 mb-3">
+            <div class="bg-amber-950/40 border border-amber-800/30 rounded-xl p-3">
+              <p class="text-amber-500/80 text-xs uppercase tracking-widest mb-1">Sun Azimuth</p>
+              <p id="sun-azimuth-display" class="text-amber-300 font-mono text-sm tabular-nums">---°</p>
+            </div>
+            <div class="bg-amber-950/40 border border-amber-800/30 rounded-xl p-3">
+              <p class="text-amber-500/80 text-xs uppercase tracking-widest mb-1">Sun Elevation</p>
+              <p id="sun-elevation-display" class="text-amber-300 font-mono text-sm tabular-nums">---°</p>
+            </div>
+          </div>
+
+          <!-- Light schedule chips -->
+          <div id="light-schedule-section" class="hidden mb-3">
+            <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Light Schedule — Today</p>
+            <div id="light-schedule-row" class="flex gap-1.5 overflow-x-auto pb-1"
+                 style="-ms-overflow-style:none; scrollbar-width:none;"></div>
+          </div>
+
+          <p id="timestamp-display" class="text-slate-600 text-xs font-mono text-center mb-3 tabular-nums">--:--:-- --</p>
+
+          <button id="btn-save"
+            class="w-full py-3.5 rounded-xl font-semibold text-sm text-slate-900
+                   bg-gradient-to-r from-amber-400 to-orange-400
+                   hover:from-amber-300 hover:to-orange-300
+                   active:from-amber-500 active:to-orange-500 active:scale-95
+                   transition-all duration-150 flex items-center justify-center gap-2
+                   shadow-lg shadow-amber-900/30 disabled:opacity-50"
+            onclick="window.App.saveLocation()">
+            <span id="save-btn-icon">💾</span>
+            <span id="save-btn-text">Save Location Scout</span>
+          </button>
+
         </div>
 
-        <!-- Sun Position row -->
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <div class="bg-amber-950/40 border border-amber-800/30 rounded-xl p-3">
-            <p class="text-amber-500/80 text-xs uppercase tracking-widest mb-1">Sun Azimuth</p>
-            <p id="sun-azimuth-display"   class="text-amber-300 font-mono text-sm tabular-nums">---°</p>
+
+        <!-- ══ MOON TAB ═══════════════════════════════════════ -->
+        <div id="tab-panel-moon" class="hidden p-4 pt-3">
+
+          <!-- Position -->
+          <div class="grid grid-cols-2 gap-2 mb-3">
+            <div class="bg-slate-800/50 border border-slate-600/25 rounded-xl p-3">
+              <p class="text-slate-400 text-xs uppercase tracking-widest mb-1">Moon Azimuth</p>
+              <p id="moon-azimuth-display" class="text-slate-200 font-mono text-sm tabular-nums">---°</p>
+            </div>
+            <div class="bg-slate-800/50 border border-slate-600/25 rounded-xl p-3">
+              <p class="text-slate-400 text-xs uppercase tracking-widest mb-1">Moon Elevation</p>
+              <p id="moon-elevation-display" class="text-slate-200 font-mono text-sm tabular-nums">---°</p>
+            </div>
           </div>
-          <div class="bg-amber-950/40 border border-amber-800/30 rounded-xl p-3">
-            <p class="text-amber-500/80 text-xs uppercase tracking-widest mb-1">Sun Elevation</p>
-            <p id="sun-elevation-display" class="text-amber-300 font-mono text-sm tabular-nums">---°</p>
+
+          <!-- Phase card -->
+          <div class="bg-slate-800/40 rounded-xl p-4 mb-3 flex items-center gap-4">
+            <span id="moon-phase-emoji" class="text-5xl leading-none">🌑</span>
+            <div class="flex-1 min-w-0">
+              <p id="moon-phase-name"   class="text-slate-100 text-base font-semibold">--</p>
+              <p id="moon-illumination" class="text-slate-400 text-sm mt-0.5">-- % illuminated</p>
+              <div class="flex gap-4 mt-2">
+                <p id="moon-rise-display" class="text-slate-400 text-xs font-mono tabular-nums">↑ Moonrise --:--</p>
+                <p id="moon-set-display"  class="text-slate-400 text-xs font-mono tabular-nums">↓ Moonset --:--</p>
+              </div>
+            </div>
           </div>
+
+          <!-- Illumination progress bar -->
+          <div class="bg-slate-800/40 rounded-xl p-3">
+            <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Illumination</p>
+            <div class="h-2 rounded-full bg-slate-700 overflow-hidden">
+              <div id="moon-illum-bar"
+                   class="h-full rounded-full bg-gradient-to-r from-slate-400 to-white transition-all duration-700"
+                   style="width: 0%"></div>
+            </div>
+            <div class="flex justify-between mt-1.5">
+              <span class="text-slate-600 text-xs">🌑 New</span>
+              <span class="text-slate-600 text-xs">Full 🌕</span>
+            </div>
+          </div>
+
         </div>
 
-        <!-- Moon Position row -->
-        <div class="grid grid-cols-2 gap-2 mb-2">
-          <div class="bg-slate-800/50 border border-slate-600/25 rounded-xl p-3">
-            <p class="text-slate-400 text-xs uppercase tracking-widest mb-1">Moon Azimuth</p>
-            <p id="moon-azimuth-display"   class="text-slate-200 font-mono text-sm tabular-nums">---°</p>
-          </div>
-          <div class="bg-slate-800/50 border border-slate-600/25 rounded-xl p-3">
-            <p class="text-slate-400 text-xs uppercase tracking-widest mb-1">Moon Elevation</p>
-            <p id="moon-elevation-display" class="text-slate-200 font-mono text-sm tabular-nums">---°</p>
-          </div>
-        </div>
 
-        <!-- Moon Phase card -->
-        <div class="bg-slate-800/40 rounded-xl p-3 mb-3 flex items-center gap-3">
-          <span id="moon-phase-emoji" class="text-3xl leading-none">🌑</span>
-          <div class="flex-1 min-w-0">
-            <p id="moon-phase-name"   class="text-slate-200 text-sm font-medium leading-tight">--</p>
-            <p id="moon-illumination" class="text-slate-500 text-xs mt-0.5">-- % illuminated</p>
-          </div>
-          <div class="text-right shrink-0">
-            <p id="moon-rise-display" class="text-slate-400 text-xs font-mono tabular-nums">↑ --:--</p>
-            <p id="moon-set-display"  class="text-slate-400 text-xs font-mono tabular-nums">↓ --:--</p>
-          </div>
-        </div>
+        <!-- ══ SKY TAB ════════════════════════════════════════ -->
+        <div id="tab-panel-sky" class="hidden p-4 pt-3">
 
-        <!-- Light Schedule (golden hour, blue hour, sunrise/set — populated by goldenHourModule) -->
-        <div id="light-schedule-section" class="hidden mb-3">
-          <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Light Schedule — Today</p>
-          <div id="light-schedule-row" class="flex gap-1.5 overflow-x-auto pb-1"
-               style="-ms-overflow-style:none; scrollbar-width:none;">
-            <!-- chips injected dynamically once GPS fix arrives -->
-          </div>
-        </div>
-
-        <!-- Visible Planets (populated by planetsModule once GPS arrives) -->
-        <div id="planets-section" class="hidden mb-3">
+          <!-- Planets -->
           <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">Visible Planets</p>
-          <div id="planets-list" class="grid grid-cols-1 gap-1.5">
-            <!-- chips injected dynamically -->
+          <div id="planets-list" class="space-y-1.5 mb-4">
+            <p id="planets-empty" class="text-slate-600 text-sm text-center py-3">Waiting for GPS fix…</p>
           </div>
+
+          <!-- Stars — placeholder -->
+          <div class="bg-slate-800/40 rounded-xl p-3 border border-slate-700/30">
+            <p class="text-slate-400 text-xs uppercase tracking-widest mb-1.5">✦ Stars</p>
+            <p class="text-slate-600 text-xs leading-relaxed">
+              Full star catalog coming next — Sirius, Canopus, Southern Cross, Orion Belt and more,
+              with magnitude, rise/set times, and AR direction arrow for each.
+            </p>
+          </div>
+
         </div>
-
-        <!-- Timestamp -->
-        <p id="timestamp-display" class="text-slate-600 text-xs font-mono text-center mb-3 tabular-nums">
-          --:--:-- --
-        </p>
-
-        <!-- Save CTA -->
-        <button
-          id="btn-save"
-          class="w-full py-3.5 rounded-xl font-semibold text-sm text-slate-900
-                 bg-gradient-to-r from-amber-400 to-orange-400
-                 hover:from-amber-300 hover:to-orange-300
-                 active:from-amber-500 active:to-orange-500 active:scale-95
-                 transition-all duration-150 flex items-center justify-center gap-2
-                 shadow-lg shadow-amber-900/30 disabled:opacity-50"
-          onclick="window.App.saveLocation()"
-        >
-          <span id="save-btn-icon">💾</span>
-          <span id="save-btn-text">Save Location Scout</span>
-        </button>
 
       </div>
     </div>

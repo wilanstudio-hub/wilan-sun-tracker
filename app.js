@@ -108,24 +108,53 @@ const dom = {
   moonIllumination:     document.getElementById('moon-illumination'),
   moonRiseDisplay:      document.getElementById('moon-rise-display'),
   moonSetDisplay:       document.getElementById('moon-set-display'),
+  moonIllumBar:         document.getElementById('moon-illum-bar'),
 
   // Moon AR arrow
   moonDirectionWrap:    document.getElementById('moon-direction-wrap'),
   moonArrow:            document.getElementById('moon-arrow'),
   moonDirectionLabel:   document.getElementById('moon-direction-label'),
 
-  // Planets
-  planetsSection:       document.getElementById('planets-section'),
+  // Planets (Sky tab)
   planetsList:          document.getElementById('planets-list'),
+  planetsEmpty:         document.getElementById('planets-empty'),
 
-  // Light schedule
+  // Light schedule (Scout tab)
   lightScheduleSection: document.getElementById('light-schedule-section'),
   lightScheduleRow:     document.getElementById('light-schedule-row'),
 
-  // Save button
+  // Save button (Scout tab)
   saveBtnIcon:          document.getElementById('save-btn-icon'),
   saveBtnText:          document.getElementById('save-btn-text'),
   btnSave:              document.getElementById('btn-save'),
+};
+
+
+// ================================================================
+// TAB MODULE
+// Switches between Scout / Moon / Sky panels.
+// All sensor modules keep running in the background regardless of
+// which tab is active — only the visible panel changes.
+// ================================================================
+const tabModule = {
+
+  _tabs: ['scout', 'moon', 'sky'],
+
+  switch(name) {
+    this._tabs.forEach(tab => {
+      const isActive = tab === name;
+
+      // Tab button — active: amber underline, inactive: grey
+      const btn = document.getElementById(`tab-btn-${tab}`);
+      btn.classList.toggle('text-amber-400',    isActive);
+      btn.classList.toggle('border-amber-400',  isActive);
+      btn.classList.toggle('text-slate-500',    !isActive);
+      btn.classList.toggle('border-transparent',!isActive);
+
+      // Tab panel — show / hide
+      document.getElementById(`tab-panel-${tab}`).classList.toggle('hidden', !isActive);
+    });
+  },
 };
 
 
@@ -678,15 +707,16 @@ const uiModule = {
     dom.permissionError.classList.remove('hidden');
   },
 
-  // Moon position, phase, and rise/set
+  // Moon position, phase, illumination bar, and rise/set
   updateMoon({ azimuth, elevation, illumination, phaseName, phaseEmoji, rise, set }) {
     dom.moonAzimuthDisplay.textContent   = `${azimuth.toFixed(1)}°`;
     dom.moonElevationDisplay.textContent = `${elevation.toFixed(1)}°`;
     dom.moonPhaseEmoji.textContent       = phaseEmoji;
     dom.moonPhaseName.textContent        = phaseName;
     dom.moonIllumination.textContent     = `${Math.round(illumination * 100)} % illuminated`;
-    dom.moonRiseDisplay.textContent      = `↑ ${fmtTime(rise)}`;
-    dom.moonSetDisplay.textContent       = `↓ ${fmtTime(set)}`;
+    dom.moonRiseDisplay.textContent      = `↑ Moonrise ${fmtTime(rise)}`;
+    dom.moonSetDisplay.textContent       = `↓ Moonset  ${fmtTime(set)}`;
+    dom.moonIllumBar.style.width         = `${Math.round(illumination * 100)}%`;
   },
 
   // Rotate moon AR arrow toward the moon's position relative to camera heading
@@ -698,26 +728,34 @@ const uiModule = {
     dom.moonDirectionWrap.style.opacity = '1';
   },
 
-  // Render visible planet rows
+  // Render visible planet rows in the Sky tab
   updatePlanets(planets) {
+    // Clear previous planet rows (leave the empty-message element in place)
+    dom.planetsList.querySelectorAll('.planet-row').forEach(r => r.remove());
+
     if (planets.length === 0) {
-      dom.planetsSection.classList.add('hidden');
+      dom.planetsEmpty.textContent = state.coords
+        ? 'No planets above the horizon right now.'
+        : 'Waiting for GPS fix…';
+      dom.planetsEmpty.classList.remove('hidden');
       return;
     }
 
-    dom.planetsList.innerHTML = planets.map(({ name, icon, color, azimuth, elevation }) => {
+    dom.planetsEmpty.classList.add('hidden');
+
+    planets.forEach(({ name, icon, color, azimuth, elevation }) => {
       const cardinal = this._toCardinal(azimuth);
-      const lowAlert = elevation < 10 ? ' · low on horizon' : '';
-      return `<div class="flex items-center gap-3 bg-slate-800/50 rounded-lg px-3 py-2">
-        <span class="${color} font-mono text-base w-5 text-center">${icon}</span>
-        <span class="text-slate-200 text-sm font-medium w-16">${name}</span>
+      const note     = elevation < 10 ? ' · low on horizon' : '';
+      const row      = document.createElement('div');
+      row.className  = 'planet-row flex items-center gap-3 bg-slate-800/50 rounded-lg px-3 py-2.5';
+      row.innerHTML  = `
+        <span class="${color} text-base w-5 text-center leading-none">${icon}</span>
+        <span class="text-slate-200 text-sm font-semibold w-16">${name}</span>
         <span class="text-slate-400 font-mono text-xs tabular-nums">↑ ${elevation.toFixed(1)}°</span>
         <span class="text-slate-400 font-mono text-xs tabular-nums">→ ${azimuth.toFixed(1)}°</span>
-        <span class="text-slate-500 text-xs">${cardinal}${lowAlert}</span>
-      </div>`;
-    }).join('');
-
-    dom.planetsSection.classList.remove('hidden');
+        <span class="text-slate-500 text-xs">${cardinal}${note}</span>`;
+      dom.planetsList.appendChild(row);
+    });
   },
 
   // Build the day's light schedule chips from SunCalc.getTimes() output
@@ -958,6 +996,7 @@ const permModule = {
 window.App = {
   requestPermissions: () => permModule.request(),
   saveLocation:       () => saveModule.save(),
+  switchTab:          (name) => tabModule.switch(name),
 };
 
 
