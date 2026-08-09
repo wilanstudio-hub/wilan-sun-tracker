@@ -395,6 +395,33 @@ const compassModule = {
       }
       if (heading === null || !isFinite(heading)) return;
 
+      // ── Tilt (computed first — needed for zenith guard below) ─────
+      // event.beta: 0° = flat, 90° = upright portrait, >90° = tilted back.
+      // Camera elevation = beta − 90 so that upright (beta=90) → camAlt=0°.
+      if (typeof event.beta === 'number') {
+        const rawTilt = event.beta - 90;
+        smoothTilt = smoothTilt === null
+          ? rawTilt
+          : ALPHA_T * rawTilt + (1 - ALPHA_T) * smoothTilt;
+        state.tilt = smoothTilt;
+      }
+
+      // ── Zenith / nadir guard ──────────────────────────────────────
+      // When the camera aims ≥ 65° above (or below) the horizon, the device
+      // orientation axes approach gimbal lock and webkitCompassHeading spins
+      // erratically. Freeze state.heading at its last good value instead of
+      // polluting it with garbage readings.
+      const camAlt = state.tilt ?? 0;
+      if (Math.abs(camAlt) > 65) {
+        uiModule.setDot(dom.compassDot, 'active');
+        if (state.heading !== null) {
+          uiModule.updateCompass(state.heading);
+          if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth,  state.heading);
+          if (state.moon.azimuth !== null) uiModule.updateMoonArrow(state.moon.azimuth, state.heading);
+        }
+        return;
+      }
+
       // ── Jump-rejection gate ───────────────────────────────────────
       // Discard readings that spike more than JUMP_LIMIT° from the current
       // smoothed heading. After RESET_COUNT consecutive out-of-gate readings
@@ -428,25 +455,11 @@ const compassModule = {
       const smoothedHeading = (Math.atan2(smoothSinH, smoothCosH) * 180 / Math.PI + 360) % 360;
       state.heading = smoothedHeading;
 
-      // ── Linear EMA for tilt ───────────────────────────────────────
-      // event.beta: 0° = flat, 90° = upright portrait, >90° = tilted back.
-      // Camera elevation = beta − 90:
-      //   upright (beta=90) → camAlt=0° (camera horizontal)  ✓
-      //   tilt up (beta=110) → camAlt=+20° (camera aimed above horizon) ✓
-      //   tilt down (beta=70) → camAlt=−20° (camera aimed below horizon) ✓
-      if (typeof event.beta === 'number') {
-        const rawTilt = event.beta - 90;
-        smoothTilt = smoothTilt === null
-          ? rawTilt
-          : ALPHA_T * rawTilt + (1 - ALPHA_T) * smoothTilt;
-        state.tilt = smoothTilt;
-      }
-
       uiModule.setDot(dom.compassDot, 'active');
       uiModule.updateCompass(smoothedHeading);
 
       // Keep both AR arrows aligned to the new heading
-      if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth, smoothedHeading);
+      if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth,  smoothedHeading);
       if (state.moon.azimuth !== null) uiModule.updateMoonArrow(state.moon.azimuth, smoothedHeading);
     };
 
