@@ -762,7 +762,7 @@ const skyChartModule = {
   _proj(alt, az, cx, cy, r, heading) {
     const a = ((az - heading) % 360 + 360) % 360 * Math.PI / 180;
     const d = (90 - alt) / 90 * r;
-    return { x: cx + d * Math.sin(a), y: cy - d * Math.cos(a) };
+    return { x: cx - d * Math.sin(a), y: cy - d * Math.cos(a) };
   },
 
   _magR(mag) { return Math.max(1.0, 9.64 - 1.81 * mag); },
@@ -951,7 +951,7 @@ const skyChartModule = {
     ctx.textBaseline = 'middle';
     ['N', 'E', 'S', 'W'].forEach((card, i) => {
       const a  = ((i * 90 - h) % 360 + 360) % 360 * Math.PI / 180;
-      const lx = cx + (r + 12) * Math.sin(a);
+      const lx = cx - (r + 12) * Math.sin(a);
       const ly = cy - (r + 12) * Math.cos(a);
       ctx.font      = 'bold 9px monospace';
       ctx.fillStyle = card === 'N' ? 'rgba(251,191,36,0.9)' : 'rgba(148,163,184,0.65)';
