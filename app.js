@@ -365,8 +365,15 @@ const compassModule = {
     // EMA smoothing state — unit-vector form handles 0/360 wrap-around for heading
     let smoothSinH = null, smoothCosH = null; // heading EMA (circular)
     let smoothTilt = null;                     // tilt EMA (linear)
-    const ALPHA_H = 0.25;  // 25% new reading — faster response than 0.18, still smooth
+    const ALPHA_H = 0.25;
     const ALPHA_T = 0.25;
+
+    // Jump-rejection gate: single readings that spike > JUMP_LIMIT° are discarded.
+    // If RESET_COUNT consecutive readings all land outside the gate, we assume the
+    // user has genuinely rotated that far and reset the smoothed heading to them.
+    const JUMP_LIMIT  = 75;  // degrees — anything larger is treated as a glitch
+    const RESET_COUNT = 5;   // after this many consecutive out-of-gate readings, accept
+    let gateRejects   = 0;
 
     state.compassHandler = (event) => {
       if (event.absolute === true) hasAbsolute = true;
@@ -387,6 +394,27 @@ const compassModule = {
         heading = (360 - event.alpha + 360) % 360;
       }
       if (heading === null || !isFinite(heading)) return;
+
+      // ── Jump-rejection gate ───────────────────────────────────────
+      // Discard readings that spike more than JUMP_LIMIT° from the current
+      // smoothed heading. After RESET_COUNT consecutive out-of-gate readings
+      // (= user has genuinely rotated that far), reset and accept.
+      if (smoothSinH !== null) {
+        const curDeg = (Math.atan2(smoothSinH, smoothCosH) * 180 / Math.PI + 360) % 360;
+        let diff = heading - curDeg;
+        if (diff >  180) diff -= 360;
+        if (diff < -180) diff += 360;
+        if (Math.abs(diff) > JUMP_LIMIT) {
+          if (++gateRejects < RESET_COUNT) return; // glitch — discard
+          // Enough consecutive out-of-gate readings → genuine rotation; reset EMA
+          const rad0 = heading * Math.PI / 180;
+          smoothSinH = Math.sin(rad0);
+          smoothCosH = Math.cos(rad0);
+          gateRejects = 0;
+        } else {
+          gateRejects = 0;
+        }
+      }
 
       // ── Circular EMA for heading (avoids 359°→1° jump artefact) ──
       const rad = heading * Math.PI / 180;
