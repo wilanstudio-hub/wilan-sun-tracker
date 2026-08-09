@@ -1101,7 +1101,7 @@ const arOverlayModule = {
     const inFrame = Math.abs(dAz) < this._FOV_H * 0.48
                  && Math.abs(dAlt) < this._FOV_V * 0.48;
 
-    return { x, y, inFrame };
+    return { x, y, inFrame, dAz };
   },
 
   _pill(ctx, x, y, text, color) {
@@ -1218,10 +1218,14 @@ const arOverlayModule = {
     }
 
     // ── Current sun (disc + rays + crosshair + info) ─────────
+    // Beyond ±90° the tan() projection wraps and mirrors the sun onto the
+    // opposite side of the screen, so skip drawing once we're facing away.
     if (state.sun.azimuth !== null && state.sun.elevation !== null) {
       const alt = state.sun.elevation;
       const az  = state.sun.azimuth;
-      const { x, y } = this._proj(alt, az, camAlt, camAz, W, H);
+      const { x, y, dAz } = this._proj(alt, az, camAlt, camAz, W, H);
+
+      if (Math.abs(dAz) <= 90) {
 
       ctx.save();
 
@@ -1288,6 +1292,7 @@ const arOverlayModule = {
       ctx.fillStyle = 'rgba(251,191,36,0.95)';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(info, x, iy + 9);
+      }
     }
 
     // ── Moon ─────────────────────────────────────────────────
