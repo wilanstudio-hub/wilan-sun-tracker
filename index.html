@@ -313,6 +313,24 @@
 
           <p id="timestamp-display" class="text-slate-600 text-xs font-mono text-center mb-3 tabular-nums">--:--:-- --</p>
 
+          <!-- ── AR sun path controls ──────────────────────── -->
+          <div id="ar-path-section" class="hidden mb-3">
+            <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">☀ Sun Path Compare</p>
+            <div class="flex flex-wrap gap-1.5 mb-2">
+              <button id="ar-btn-today" onclick="window.App.toggleArPath('today')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-amber-400/60 bg-amber-900/40 text-amber-300 active:scale-95 transition-opacity">Today</button>
+              <button id="ar-btn-jun21" onclick="window.App.toggleArPath('jun21')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-red-500/60 bg-red-900/40 text-red-300 active:scale-95 transition-opacity">Jun 21</button>
+              <button id="ar-btn-mar20" onclick="window.App.toggleArPath('mar20')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-green-500/60 bg-green-900/40 text-green-300 active:scale-95 transition-opacity">Mar 20</button>
+              <button id="ar-btn-dec21" onclick="window.App.toggleArPath('dec21')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-blue-400/60 bg-blue-900/40 text-blue-300 active:scale-95 transition-opacity">Dec 21</button>
+            </div>
+            <input type="date" id="ar-custom-date"
+              class="w-full bg-slate-800/60 text-slate-300 text-xs font-mono px-3 py-2 rounded-lg border border-slate-600/40 focus:outline-none focus:border-amber-500/60"
+              onchange="window.App.setArCustomDate(this.value)" />
+          </div>
+
           <button id="btn-save"
             class="w-full py-3.5 rounded-xl font-semibold text-sm text-slate-900
                    bg-gradient-to-r from-amber-400 to-orange-400

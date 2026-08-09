@@ -954,25 +954,32 @@ const skyChartModule = {
 
 // ================================================================
 // AR OVERLAY MODULE
-// Projects sun/moon paths onto the live camera feed.
+// Projects sun/moon paths + azimuth/elevation grid onto camera feed.
 //
-// Coordinate pipeline:
-//   GPS + SunCalc → alt/az at 10-min intervals → screen x,y via:
-//   dAz = targetAz - cameraAz  (from compass heading)
-//   dAlt = targetAlt - cameraAlt  (from device tilt: 90° - beta)
-//   x = W/2 + (dAz  / FOV_H) * W   (equirectangular approximation)
-//   y = H/2 - (dAlt / FOV_V) * H
+// Shows today + 3 seasonal sun paths simultaneously; supports a
+// user-selected custom date. Equirectangular projection:
+//   x = W/2 + (dAz / FOV_H) * W
+//   y = H/2 − (dAlt / FOV_V) * H
 // ================================================================
 const arOverlayModule = {
 
   _canvas:      null,
   _ctx:         null,
-  _sunPath:     [],
+  _sunPaths:    {},          // { key: [{alt, az, hour, min}] }
   _lastCompute: 0,
-  _COMPUTE_MS:  300_000,  // recompute sun arc every 5 min (arc is slow-changing)
+  _COMPUTE_MS:  300_000,
 
-  _FOV_H: 55,   // horizontal FOV in portrait (degrees) — typical for phone cameras
+  _FOV_H: 55,   // horizontal FOV in portrait (degrees)
   _FOV_V: 70,   // vertical FOV in portrait
+
+  _PATHS: [
+    { key: 'today', label: 'Today',  color: 'rgba(251,191,36,0.9)',  month: null, day: null },
+    { key: 'jun21', label: 'Jun 21', color: 'rgba(239,68,68,0.85)',  month: 5,    day: 21  },
+    { key: 'mar20', label: 'Mar 20', color: 'rgba(74,222,128,0.85)', month: 2,    day: 20  },
+    { key: 'dec21', label: 'Dec 21', color: 'rgba(147,197,253,0.85)',month: 11,   day: 21  },
+  ],
+  _activePaths: new Set(['today', 'jun21', 'mar20', 'dec21']),
+  _showGrid:    true,
 
   init() {
     this._canvas = document.getElementById('ar-canvas');
@@ -994,12 +1001,41 @@ const arOverlayModule = {
     if (state.coords) this._recompute(state.coords.latitude, state.coords.longitude);
   },
 
+  togglePath(key) {
+    if (this._activePaths.has(key)) this._activePaths.delete(key);
+    else                            this._activePaths.add(key);
+    uiModule.updateArPathButtons(this._activePaths);
+  },
+
+  setCustomDate(dateStr) {
+    if (!dateStr || !state.coords) return;
+    const [y, mo, d] = dateStr.split('-').map(Number);
+    this._computePath(
+      state.coords.latitude, state.coords.longitude,
+      new Date(y, mo - 1, d, 0, 0, 0), 'custom'
+    );
+    if (!this._PATHS.find(p => p.key === 'custom')) {
+      this._PATHS.push({ key: 'custom', label: dateStr.slice(5), color: 'rgba(251,146,60,0.9)' });
+    }
+    this._activePaths.add('custom');
+    uiModule.updateArPathButtons(this._activePaths);
+  },
+
   _recompute(lat, lng) {
     if (typeof SunCalc === 'undefined') return;
+    const year  = new Date().getFullYear();
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const path  = [];
+    for (const p of this._PATHS) {
+      if (p.key === 'custom') continue;
+      const base = (p.month !== null) ? new Date(year, p.month, p.day, 0, 0, 0) : today;
+      this._computePath(lat, lng, base, p.key);
+    }
+  },
+
+  _computePath(lat, lng, base, key) {
+    const path = [];
     for (let m = 0; m < 1440; m += 10) {
-      const t   = new Date(today.getTime() + m * 60_000);
+      const t   = new Date(base.getTime() + m * 60_000);
       const pos = SunCalc.getPosition(t, lat, lng);
       path.push({
         alt:  pos.altitude * 180 / Math.PI,
@@ -1008,7 +1044,7 @@ const arOverlayModule = {
         min:  t.getMinutes(),
       });
     }
-    this._sunPath = path;
+    this._sunPaths[key] = path;
   },
 
   _proj(alt, az, camAlt, camAz, W, H) {
@@ -1023,6 +1059,20 @@ const arOverlayModule = {
     };
   },
 
+  _pill(ctx, x, y, text, color) {
+    ctx.font = 'bold 10px monospace';
+    const tw = ctx.measureText(text).width + 10;
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.beginPath();
+    const rx = x - tw / 2, ry = y - 16;
+    if (ctx.roundRect) { ctx.roundRect(rx, ry, tw, 14, 3); } else { ctx.rect(rx, ry, tw, 14); }
+    ctx.fill();
+    ctx.fillStyle    = color;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, ry + 7);
+  },
+
   _draw() {
     const canvas = this._canvas;
     const ctx    = this._ctx;
@@ -1034,111 +1084,146 @@ const arOverlayModule = {
       canvas.width  = W;
       canvas.height = H;
     }
-
     ctx.clearRect(0, 0, W, H);
-
-    if (!state.coords || this._sunPath.length === 0) return;
+    if (!state.coords) return;
 
     const camAz  = state.heading ?? 0;
-    const camAlt = state.tilt    ?? 0;  // 0 = horizontal (phone upright)
+    const camAlt = state.tilt    ?? 0;
 
-    // ── Sun path arc ─────────────────────────────────────────────
-    ctx.save();
-    ctx.strokeStyle = 'rgba(251,191,36,0.75)';
-    ctx.lineWidth   = 2.5;
-    ctx.setLineDash([8, 5]);
-    ctx.lineCap     = 'round';
-    ctx.beginPath();
-    let pen = false;
-    this._sunPath.forEach(p => {
-      const { x, y, inFrame } = this._proj(p.alt, p.az, camAlt, camAz, W, H);
-      if (inFrame) {
-        if (pen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); pen = true; }
-      } else {
-        pen = false;
-      }
-    });
-    ctx.stroke();
-    ctx.setLineDash([]);
+    // ── Azimuth / elevation grid ──────────────────────────────
+    if (this._showGrid) {
+      ctx.save();
+      ctx.setLineDash([4, 6]);
+      ctx.lineWidth = 0.75;
 
-    // Hour tick marks + labels
-    this._sunPath.filter(p => p.min === 0 && p.alt > 0).forEach(p => {
-      const { x, y, inFrame } = this._proj(p.alt, p.az, camAlt, camAz, W, H);
-      if (!inFrame) return;
-      // Dot
-      ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(251,191,36,0.85)';
-      ctx.fill();
-      // Time label
-      const lbl = p.hour === 0 ? '12am' : p.hour < 12 ? `${p.hour}am`
-                : p.hour === 12 ? '12pm' : `${p.hour - 12}pm`;
-      ctx.fillStyle    = 'rgba(255,255,255,0.9)';
-      ctx.font         = 'bold 11px monospace';
-      ctx.textAlign    = 'center';
-      ctx.textBaseline = 'bottom';
-      // Small background pill for readability
-      const tw = ctx.measureText(lbl).width + 8;
-      ctx.fillStyle = 'rgba(0,0,0,0.45)';
-      ctx.beginPath();
-      const rx = x - tw / 2, ry = y - 20;
-      if (ctx.roundRect) { ctx.roundRect(rx, ry, tw, 14, 4); }
-      else               { ctx.rect(rx, ry, tw, 14); }
-      ctx.fill();
-      ctx.fillStyle = 'rgba(251,191,36,0.95)';
-      ctx.fillText(lbl, x, y - 8);
-    });
-
-    // ── Current sun ───────────────────────────────────────────────
-    if (state.sun.azimuth !== null && state.sun.elevation !== null) {
-      const sunAlt = state.sun.elevation;
-      const sunAz  = state.sun.azimuth;
-      const { x, y } = this._proj(sunAlt, sunAz, camAlt, camAz, W, H);
-
-      // Glow halo
-      if (sunAlt > 0) {
-        const glow = ctx.createRadialGradient(x, y, 8, x, y, 40);
-        glow.addColorStop(0, 'rgba(251,191,36,0.35)');
-        glow.addColorStop(1, 'rgba(251,191,36,0)');
-        ctx.beginPath();
-        ctx.arc(x, y, 40, 0, Math.PI * 2);
-        ctx.fillStyle = glow;
-        ctx.fill();
+      // Horizontal elevation lines
+      for (let a = -15; a <= 75; a += 15) {
+        const y = H / 2 - (a - camAlt) / this._FOV_V * H;
+        if (y < -10 || y > H + 10) continue;
+        ctx.strokeStyle = a === 0 ? 'rgba(99,102,241,0.5)' : 'rgba(59,130,246,0.22)';
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+        if (y > 12 && y < H - 4) {
+          ctx.setLineDash([]);
+          ctx.fillStyle    = 'rgba(147,197,253,0.6)';
+          ctx.font         = '9px monospace';
+          ctx.textAlign    = 'left';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(`${a}°`, 6, y - 1);
+          ctx.setLineDash([4, 6]);
+        }
       }
 
-      ctx.font         = '32px serif';
-      ctx.textAlign    = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle    = '#ffffff';
-      ctx.fillText('☀', x, y);
-
-      if (sunAlt > 0) {
-        ctx.fillStyle    = 'rgba(251,191,36,0.9)';
-        ctx.font         = 'bold 11px monospace';
+      // Vertical azimuth lines every 30°
+      for (let az = 0; az < 360; az += 30) {
+        let dAz = az - camAz;
+        if (dAz >  180) dAz -= 360;
+        if (dAz < -180) dAz += 360;
+        if (Math.abs(dAz) > this._FOV_H * 0.65) continue;
+        const x = W / 2 + (dAz / this._FOV_H) * W;
+        ctx.strokeStyle = 'rgba(59,130,246,0.22)';
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle    = 'rgba(147,197,253,0.6)';
+        ctx.font         = '9px monospace';
+        ctx.textAlign    = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText(`${sunAlt.toFixed(0)}° ${this._toCardinal(sunAz)}`, x, y + 18);
+        ctx.fillText(`${az}° ${this._toCardinal(az)}`, x, 4);
+        ctx.setLineDash([4, 6]);
       }
+
+      ctx.setLineDash([]);
+      ctx.restore();
     }
 
-    // ── Moon ─────────────────────────────────────────────────────
+    // ── Sun paths (today + seasonal + custom) ─────────────────
+    for (const p of this._PATHS) {
+      if (!this._activePaths.has(p.key)) continue;
+      const path = this._sunPaths[p.key];
+      if (!path) continue;
+
+      ctx.save();
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth   = 2;
+      ctx.lineCap     = 'round';
+      ctx.beginPath();
+      let pen = false;
+      path.forEach(pt => {
+        const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
+        if (inFrame) {
+          if (pen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); pen = true; }
+        } else { pen = false; }
+      });
+      ctx.stroke();
+
+      // Hour dots + labels
+      path.filter(pt => pt.min === 0 && pt.alt > 0).forEach(pt => {
+        const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
+        if (!inFrame) return;
+        ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = p.color; ctx.fill();
+        const hLabel = pt.hour < 12 ? `${pt.hour}am`
+                     : pt.hour === 12 ? '12pm' : `${pt.hour - 12}pm`;
+        const suffix = (p.key !== 'today') ? ` ${p.label}` : '';
+        this._pill(ctx, x, y - 2, hLabel + suffix, p.color);
+      });
+
+      ctx.restore();
+    }
+
+    // ── Current sun (crosshair + info) ───────────────────────
+    if (state.sun.azimuth !== null && state.sun.elevation !== null) {
+      const alt = state.sun.elevation;
+      const az  = state.sun.azimuth;
+      const { x, y } = this._proj(alt, az, camAlt, camAz, W, H);
+
+      if (alt > 0) {
+        const glow = ctx.createRadialGradient(x, y, 8, x, y, 44);
+        glow.addColorStop(0, 'rgba(251,191,36,0.4)');
+        glow.addColorStop(1, 'rgba(251,191,36,0)');
+        ctx.beginPath(); ctx.arc(x, y, 44, 0, Math.PI * 2);
+        ctx.fillStyle = glow; ctx.fill();
+      }
+
+      ctx.font = '30px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ffffff'; ctx.fillText('☀', x, y);
+
+      // Crosshair ring
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.stroke();
+      [0, 90, 180, 270].forEach(a => {
+        const r = a * Math.PI / 180;
+        ctx.beginPath();
+        ctx.moveTo(x + 22 * Math.sin(r), y - 22 * Math.cos(r));
+        ctx.lineTo(x + 30 * Math.sin(r), y - 30 * Math.cos(r));
+        ctx.stroke();
+      });
+
+      // Info pill
+      const altStr = alt >= 0 ? `+${alt.toFixed(0)}` : alt.toFixed(0);
+      const info   = `Ele: ${altStr}°  Az: ${az.toFixed(0)}° (${this._toCardinal(az)})`;
+      const iw     = ctx.measureText(info).width + 14;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.beginPath();
+      const ix = x - iw / 2, iy = y + 35;
+      if (ctx.roundRect) { ctx.roundRect(ix, iy, iw, 18, 4); } else { ctx.rect(ix, iy, iw, 18); }
+      ctx.fill();
+      ctx.fillStyle = 'rgba(251,191,36,0.95)'; ctx.font = 'bold 11px monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(info, x, iy + 9);
+    }
+
+    // ── Moon ─────────────────────────────────────────────────
     if (state.moon.azimuth !== null && state.moon.elevation > -5) {
       const { x, y, inFrame } = this._proj(
         state.moon.elevation, state.moon.azimuth, camAlt, camAz, W, H
       );
       if (inFrame) {
-        ctx.font         = '28px serif';
-        ctx.textAlign    = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle    = '#ffffff';
-        ctx.fillText(state.moon.phaseEmoji ?? '🌙', x, y);
-        ctx.fillStyle    = 'rgba(200,200,220,0.85)';
-        ctx.font         = '10px monospace';
-        ctx.textBaseline = 'top';
-        ctx.fillText(`${state.moon.elevation.toFixed(0)}°`, x, y + 15);
+        ctx.font = '26px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffffff'; ctx.fillText(state.moon.phaseEmoji ?? '🌙', x, y);
+        ctx.fillStyle = 'rgba(200,200,220,0.8)'; ctx.font = '10px monospace';
+        ctx.textBaseline = 'top'; ctx.fillText(`${state.moon.elevation.toFixed(0)}°`, x, y + 14);
       }
     }
-
-    ctx.restore();
   },
 
   _toCardinal(deg) {
@@ -1170,6 +1255,16 @@ const uiModule = {
   showDataSection() {
     dom.permissionSection.classList.add('hidden');
     dom.dataSection.classList.remove('hidden');
+    const sec = document.getElementById('ar-path-section');
+    if (sec) sec.classList.remove('hidden');
+  },
+
+  // Sync path-toggle button opacity to active set
+  updateArPathButtons(activePaths) {
+    ['today', 'jun21', 'mar20', 'dec21', 'custom'].forEach(key => {
+      const btn = document.getElementById(`ar-btn-${key}`);
+      if (btn) btn.style.opacity = activePaths.has(key) ? '1' : '0.3';
+    });
   },
 
   // GPS coordinates and accuracy
@@ -1526,6 +1621,8 @@ window.App = {
   requestPermissions: () => permModule.request(),
   saveLocation:       () => saveModule.save(),
   switchTab:          (name) => tabModule.switch(name),
+  toggleArPath:       (key)  => arOverlayModule.togglePath(key),
+  setArCustomDate:    (val)  => arOverlayModule.setCustomDate(val),
 };
 
 
