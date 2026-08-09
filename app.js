@@ -735,13 +735,27 @@ const skyChartModule = {
     this._ctx = this._canvas.getContext('2d');
     const tick = () => { this._draw(); requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
+
+    // Self-healing: if plotData is still null after 2 s (race between GPS and
+    // stars.js load), keep retrying every 3 s until we get a successful compute.
+    const retry = () => {
+      if (this._plotData) return;
+      if (state.coords && typeof STAR_CATALOG !== 'undefined') {
+        this._lastCompute = 0;
+        this._recompute(state.coords.latitude, state.coords.longitude);
+      }
+      if (!this._plotData) setTimeout(retry, 3_000);
+    };
+    setTimeout(retry, 2_000);
   },
 
   update(lat, lng) {
     const now = Date.now();
     if (now - this._lastCompute < this._COMPUTE_MS) return;
-    this._lastCompute = now;
+    // Set _lastCompute AFTER recompute so a failed compute (missing STAR_CATALOG)
+    // doesn't block the next GPS tick for 5 s.
     this._recompute(lat, lng);
+    if (this._plotData) this._lastCompute = now;
   },
 
   refresh() {
