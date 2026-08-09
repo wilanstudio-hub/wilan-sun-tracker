@@ -718,11 +718,12 @@ const planetsModule = {
 // ================================================================
 const skyChartModule = {
 
-  _canvas:      null,
-  _ctx:         null,
-  _plotData:    null,
-  _lastCompute: 0,
-  _COMPUTE_MS:  5_000,
+  _canvas:       null,
+  _ctx:          null,
+  _plotData:     null,
+  _lastCompute:  0,
+  _COMPUTE_MS:   5_000,
+  _lastDrawRetry: 0,
 
   _SPECTRAL: {
     O: '#9bb0ff', B: '#aabfff', A: '#ffffff',
@@ -873,11 +874,27 @@ const skyChartModule = {
     ctx.clip();
 
     if (!this._plotData) {
+      // If GPS + catalog are ready, retry recompute (throttled to 1 s so we
+      // don't call it at 60 fps, but fast enough to feel instant to the user).
+      const now = Date.now();
+      if (state.coords && typeof STAR_CATALOG !== 'undefined'
+          && now - this._lastDrawRetry > 1_000) {
+        this._lastDrawRetry = now;
+        try {
+          this._recompute(state.coords.latitude, state.coords.longitude);
+        } catch (e) {
+          console.error('[SkyChart] recompute error:', e);
+        }
+      }
+
       ctx.fillStyle    = '#475569';
       ctx.font         = '11px monospace';
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText('Waiting for GPS…', cx, cy);
+      const msg = !state.coords
+        ? 'กด Start AR Scout เพื่อเปิด GPS'
+        : 'กำลังโหลดแผนที่ดาว…';
+      ctx.fillText(msg, cx, cy);
       ctx.restore();
       return;
     }
