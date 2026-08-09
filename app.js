@@ -1037,10 +1037,21 @@ const arOverlayModule = {
 
   _canvas:      null,
   _ctx:         null,
-  _sunPaths:    {},          // { key: [{alt, az, hour, min}] }
-  _moonPath:    null,        // [{alt, az, hour, min}] for today
+  _sunPaths:          {},   // { key: [{alt, az, hour, min}] }
+  _moonPath:          null, // today's moon path [{alt, az, hour, min}]
+  _monthlyMoonPaths:  {},   // { 'moon-jan': [...], ... } bi-monthly snapshots
   _lastCompute: 0,
   _COMPUTE_MS:  300_000,
+
+  _MOON_PATHS: [
+    { key: 'moon-jan', label: 'Jan', color: 'rgba(226,232,240,0.85)', month: 0,  day: 15 },
+    { key: 'moon-mar', label: 'Mar', color: 'rgba(186,230,253,0.85)', month: 2,  day: 15 },
+    { key: 'moon-may', label: 'May', color: 'rgba(110,231,183,0.85)', month: 4,  day: 15 },
+    { key: 'moon-jul', label: 'Jul', color: 'rgba(216,180,254,0.85)', month: 6,  day: 15 },
+    { key: 'moon-sep', label: 'Sep', color: 'rgba(253,186,116,0.85)', month: 8,  day: 15 },
+    { key: 'moon-nov', label: 'Nov', color: 'rgba(165,180,252,0.85)', month: 10, day: 15 },
+  ],
+  _activeMoonPaths: new Set(), // off by default — user toggles on
 
   // ── Field of View (degrees) ─────────────────────────────────────
   // iPhone main camera (26 mm eq.) sensor is landscape-oriented.
@@ -1115,10 +1126,15 @@ const arOverlayModule = {
       const base = (p.month !== null) ? new Date(year, p.month, p.day, 0, 0, 0) : today;
       this._computePath(lat, lng, base, p.key);
     }
-    this._computeMoonPath(lat, lng, today);
+    this._computeMoonPath(lat, lng, today, null);
+    for (const mp of this._MOON_PATHS) {
+      const base = new Date(year, mp.month, mp.day, 0, 0, 0);
+      this._computeMoonPath(lat, lng, base, mp.key);
+    }
   },
 
-  _computeMoonPath(lat, lng, base) {
+  // key=null → store as today's path (_moonPath); key=string → store in _monthlyMoonPaths
+  _computeMoonPath(lat, lng, base, key) {
     const path = [];
     for (let m = 0; m < 1440; m += 10) {
       const t   = new Date(base.getTime() + m * 60_000);
@@ -1130,7 +1146,14 @@ const arOverlayModule = {
         min:  t.getMinutes(),
       });
     }
-    this._moonPath = path;
+    if (key) { this._monthlyMoonPaths[key] = path; }
+    else      { this._moonPath = path; }
+  },
+
+  toggleMoonPath(key) {
+    if (this._activeMoonPaths.has(key)) this._activeMoonPaths.delete(key);
+    else                                this._activeMoonPaths.add(key);
+    uiModule.updateMoonPathButtons(this._activeMoonPaths);
   },
 
   _computePath(lat, lng, base, key) {
@@ -1366,7 +1389,42 @@ const arOverlayModule = {
       }
     }
 
-    // ── Moon path arc ─────────────────────────────────────────
+    // ── Monthly moon paths ────────────────────────────────────
+    for (const mp of this._MOON_PATHS) {
+      if (!this._activeMoonPaths.has(mp.key)) continue;
+      const mpath = this._monthlyMoonPaths[mp.key];
+      if (!mpath) continue;
+      ctx.save();
+      ctx.strokeStyle = mp.color;
+      ctx.lineWidth   = 1.5;
+      ctx.lineCap     = 'round';
+      ctx.setLineDash([3, 6]);
+      ctx.beginPath();
+      let mpen = false;
+      mpath.forEach(pt => {
+        if (pt.alt <= 0) { mpen = false; return; }
+        const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
+        if (inFrame) {
+          if (mpen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); mpen = true; }
+        } else { mpen = false; }
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Label at the point with the highest visible altitude in-frame
+      let bestPt = null, bestAlt = -Infinity;
+      mpath.forEach(pt => {
+        if (pt.alt <= 0) return;
+        const { inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
+        if (inFrame && pt.alt > bestAlt) { bestAlt = pt.alt; bestPt = pt; }
+      });
+      if (bestPt) {
+        const { x, y } = this._proj(bestPt.alt, bestPt.az, camAlt, camAz, W, H);
+        this._pill(ctx, x, y - 14, mp.label, mp.color);
+      }
+      ctx.restore();
+    }
+
+    // ── Moon path arc (today) ─────────────────────────────────
     if (this._moonPath) {
       ctx.save();
       ctx.strokeStyle = 'rgba(186,230,253,0.7)'; // pale sky-blue
@@ -1461,13 +1519,22 @@ const uiModule = {
   showDataSection() {
     dom.permissionSection.classList.add('hidden');
     dom.dataSection.classList.remove('hidden');
-    const sec = document.getElementById('ar-path-section');
-    if (sec) sec.classList.remove('hidden');
+    const sec  = document.getElementById('ar-path-section');
+    const sec2 = document.getElementById('ar-moon-path-section');
+    if (sec)  sec.classList.remove('hidden');
+    if (sec2) sec2.classList.remove('hidden');
   },
 
   // Sync path-toggle button opacity to active set
   updateArPathButtons(activePaths) {
     ['today', 'jun21', 'mar20', 'dec21', 'custom'].forEach(key => {
+      const btn = document.getElementById(`ar-btn-${key}`);
+      if (btn) btn.style.opacity = activePaths.has(key) ? '1' : '0.3';
+    });
+  },
+
+  updateMoonPathButtons(activePaths) {
+    ['moon-jan', 'moon-mar', 'moon-may', 'moon-jul', 'moon-sep', 'moon-nov'].forEach(key => {
       const btn = document.getElementById(`ar-btn-${key}`);
       if (btn) btn.style.opacity = activePaths.has(key) ? '1' : '0.3';
     });
@@ -1922,6 +1989,7 @@ window.App = {
   switchTab:          (name) => { tabModule.switch(name); sheetModule.expand(); },
   toggleSheet:        ()     => sheetModule.toggle(),
   toggleArPath:       (key)  => arOverlayModule.togglePath(key),
+  toggleMoonPath:     (key)  => arOverlayModule.toggleMoonPath(key),
   setArCustomDate:    (val)  => arOverlayModule.setCustomDate(val),
 };
 

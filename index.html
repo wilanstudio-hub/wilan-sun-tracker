@@ -384,6 +384,25 @@
               onchange="window.App.setArCustomDate(this.value)" />
           </div>
 
+          <!-- ── AR moon path controls ─────────────────────── -->
+          <div id="ar-moon-path-section" class="hidden mb-3">
+            <p class="text-slate-500 text-xs uppercase tracking-widest mb-2">🌙 Moon Path — 15th of Month</p>
+            <div class="flex flex-wrap gap-1.5">
+              <button id="ar-btn-moon-jan" onclick="window.App.toggleMoonPath('moon-jan')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-slate-300/50 bg-slate-700/40 text-slate-200 active:scale-95 transition-opacity" style="opacity:0.3">Jan</button>
+              <button id="ar-btn-moon-mar" onclick="window.App.toggleMoonPath('moon-mar')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-sky-300/60 bg-sky-900/40 text-sky-200 active:scale-95 transition-opacity" style="opacity:0.3">Mar</button>
+              <button id="ar-btn-moon-may" onclick="window.App.toggleMoonPath('moon-may')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-emerald-300/60 bg-emerald-900/40 text-emerald-200 active:scale-95 transition-opacity" style="opacity:0.3">May</button>
+              <button id="ar-btn-moon-jul" onclick="window.App.toggleMoonPath('moon-jul')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-violet-400/60 bg-violet-900/40 text-violet-200 active:scale-95 transition-opacity" style="opacity:0.3">Jul</button>
+              <button id="ar-btn-moon-sep" onclick="window.App.toggleMoonPath('moon-sep')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-orange-300/60 bg-orange-900/40 text-orange-200 active:scale-95 transition-opacity" style="opacity:0.3">Sep</button>
+              <button id="ar-btn-moon-nov" onclick="window.App.toggleMoonPath('moon-nov')"
+                class="px-2.5 py-1 rounded-full text-xs font-mono border border-indigo-400/60 bg-indigo-900/40 text-indigo-200 active:scale-95 transition-opacity" style="opacity:0.3">Nov</button>
+            </div>
+          </div>
+
           <button id="btn-save"
             class="w-full py-3.5 rounded-xl font-semibold text-sm text-slate-900
                    bg-gradient-to-r from-amber-400 to-orange-400
