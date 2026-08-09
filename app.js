@@ -365,20 +365,23 @@ const compassModule = {
     // EMA smoothing state — unit-vector form handles 0/360 wrap-around for heading
     let smoothSinH = null, smoothCosH = null; // heading EMA (circular)
     let smoothTilt = null;                     // tilt EMA (linear)
-    const ALPHA_H = 0.18;  // 18% new reading → strong smoothing, ~0.3 s settling
-    const ALPHA_T = 0.22;  // tilt can be slightly more responsive
+    const ALPHA_H = 0.25;  // 25% new reading — faster response than 0.18, still smooth
+    const ALPHA_T = 0.25;
 
     state.compassHandler = (event) => {
       if (event.absolute === true) hasAbsolute = true;
       if (!event.absolute && hasAbsolute) return;
 
-      // Throttle to 10 Hz — EMA does the temporal smoothing within that
+      // Throttle to 20 Hz — halved from 100ms to reduce perceived lag during movement
       const now = Date.now();
-      if (now - lastUpdate < 100) return;
+      if (now - lastUpdate < 50) return;
       lastUpdate = now;
 
       let heading = null;
       if (typeof event.webkitCompassHeading === 'number') {
+        // iOS accuracy gate: skip readings the sensor flags as unreliable (> ±45°)
+        const acc = event.webkitCompassAccuracy;
+        if (typeof acc === 'number' && acc > 45) return;
         heading = event.webkitCompassHeading;
       } else if (typeof event.alpha === 'number') {
         heading = (360 - event.alpha + 360) % 360;
@@ -415,8 +418,8 @@ const compassModule = {
       uiModule.updateCompass(smoothedHeading);
 
       // Keep both AR arrows aligned to the new heading
-      if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth, heading);
-      if (state.moon.azimuth !== null) uiModule.updateMoonArrow(state.moon.azimuth, heading);
+      if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth, smoothedHeading);
+      if (state.moon.azimuth !== null) uiModule.updateMoonArrow(state.moon.azimuth, smoothedHeading);
     };
 
     // Register on both event types; the flag above handles deduplication.
