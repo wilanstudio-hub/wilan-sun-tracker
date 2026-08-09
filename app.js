@@ -398,8 +398,13 @@ const compassModule = {
       state.heading = smoothedHeading;
 
       // ── Linear EMA for tilt ───────────────────────────────────────
+      // event.beta: 0° = flat, 90° = upright portrait, >90° = tilted back.
+      // Camera elevation = beta − 90:
+      //   upright (beta=90) → camAlt=0° (camera horizontal)  ✓
+      //   tilt up (beta=110) → camAlt=+20° (camera aimed above horizon) ✓
+      //   tilt down (beta=70) → camAlt=−20° (camera aimed below horizon) ✓
       if (typeof event.beta === 'number') {
-        const rawTilt = 90 - event.beta;
+        const rawTilt = event.beta - 90;
         smoothTilt = smoothTilt === null
           ? rawTilt
           : ALPHA_T * rawTilt + (1 - ALPHA_T) * smoothTilt;
@@ -983,8 +988,14 @@ const arOverlayModule = {
   _lastCompute: 0,
   _COMPUTE_MS:  300_000,
 
-  _FOV_H: 65,   // horizontal FOV in portrait — typical wide phone camera
-  _FOV_V: 78,   // vertical FOV in portrait
+  // ── Field of View (degrees) ─────────────────────────────────────
+  // iPhone main camera (26 mm eq.) sensor is landscape-oriented.
+  // In portrait mode the narrow axis becomes the screen width:
+  //   FOV_H ≈ 56°  (left–right in portrait  = landscape height FOV)
+  //   FOV_V ≈ 74°  (up–down   in portrait  = landscape width  FOV)
+  // Tune these if sun/moon drift off-centre vs. real scene.
+  _FOV_H: 56,
+  _FOV_V: 74,
 
   // Precomputed tan(FOV/2) for perspective projection (set in init)
   _tanHH: 0,
