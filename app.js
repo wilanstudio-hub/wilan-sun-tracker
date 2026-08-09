@@ -1677,6 +1677,83 @@ const permModule = {
 
 
 // ================================================================
+// SHEET MODULE
+// Drag-to-collapse bottom panel. Swipe down → shows only the tab
+// bar + handle so the AR camera is unobstructed. Swipe up or tap
+// the handle to expand back to full height.
+// ================================================================
+const sheetModule = {
+
+  _main:          null,
+  _dragging:      false,
+  _startY:        0,
+  _startTranslate: 0,
+  _currentY:      0,
+  _expanded:      true,
+  _SNAP_VISIBLE:  64,   // px of card visible when collapsed (handle + tab bar)
+  _TRANSITION:    'transform 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
+
+  init() {
+    this._main   = document.getElementById('bottom-sheet');
+    const handle = document.getElementById('sheet-handle');
+    if (!this._main || !handle) return;
+
+    this._main.style.transition = this._TRANSITION;
+
+    handle.addEventListener('touchstart', (e) => {
+      this._dragging      = true;
+      this._startY        = e.touches[0].clientY;
+      this._startTranslate = this._currentY;
+      this._main.style.transition = 'none';
+
+      const onMove = (ev) => {
+        if (!this._dragging) return;
+        ev.preventDefault();
+        const dy  = ev.touches[0].clientY - this._startY;
+        const max = this._maxY();
+        this._currentY = Math.max(0, Math.min(max, this._startTranslate + dy));
+        this._main.style.transform = `translateY(${this._currentY}px)`;
+      };
+
+      const onEnd = () => {
+        this._dragging = false;
+        document.removeEventListener('touchmove', onMove);
+        document.removeEventListener('touchend',  onEnd);
+        this._snap();
+      };
+
+      document.addEventListener('touchmove', onMove, { passive: false });
+      document.addEventListener('touchend',  onEnd);
+    }, { passive: true });
+
+    // Tap handle to toggle
+    handle.addEventListener('click', () => this.toggle());
+  },
+
+  toggle() {
+    this._expanded = !this._expanded;
+    this._snap();
+  },
+
+  expand() {
+    this._expanded = true;
+    this._snap();
+  },
+
+  _maxY() {
+    return Math.max(0, this._main.offsetHeight - this._SNAP_VISIBLE);
+  },
+
+  _snap() {
+    const target = this._expanded ? 0 : this._maxY();
+    this._currentY = target;
+    this._main.style.transition = this._TRANSITION;
+    this._main.style.transform  = `translateY(${target}px)`;
+  },
+};
+
+
+// ================================================================
 // PUBLIC API
 // Exposed on `window.App` so the inline onclick attributes in
 // index.html can reach module methods without polluting global scope.
@@ -1685,7 +1762,7 @@ window.App = {
   requestPermissions: () => permModule.request(),
   retryCompass:       () => compassModule.requestPermission(),
   saveLocation:       () => saveModule.save(),
-  switchTab:          (name) => tabModule.switch(name),
+  switchTab:          (name) => { tabModule.switch(name); sheetModule.expand(); },
   toggleArPath:       (key)  => arOverlayModule.togglePath(key),
   setArCustomDate:    (val)  => arOverlayModule.setCustomDate(val),
 };
@@ -1701,4 +1778,5 @@ document.addEventListener('DOMContentLoaded', () => {
   console.log('[App] Wilan Sun Tracker — ready. Waiting for user gesture to start sensors.');
   skyChartModule.init();
   arOverlayModule.init();
+  sheetModule.init();
 });
