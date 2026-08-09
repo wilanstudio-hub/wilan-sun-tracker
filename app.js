@@ -368,12 +368,14 @@ const compassModule = {
     const ALPHA_H = 0.25;
     const ALPHA_T = 0.25;
 
-    // Jump-rejection gate: single readings that spike > JUMP_LIMIT° are discarded.
-    // If RESET_COUNT consecutive readings all land outside the gate, we assume the
-    // user has genuinely rotated that far and reset the smoothed heading to them.
-    const JUMP_LIMIT  = 75;  // degrees — anything larger is treated as a glitch
-    const RESET_COUNT = 5;   // after this many consecutive out-of-gate readings, accept
+    // Jump-rejection gate
+    const JUMP_LIMIT  = 60;  // degrees — tightened from 75 to catch near-zenith drift
+    const RESET_COUNT = 8;   // consecutive out-of-gate readings before accepting a real rotation
     let gateRejects   = 0;
+
+    // Zenith lock with hysteresis: enter at > 60°, exit at < 50°.
+    // Prevents the guard from flickering on/off when tilt oscillates near the threshold.
+    let isZenithLocked = false;
 
     state.compassHandler = (event) => {
       if (event.absolute === true) hasAbsolute = true;
@@ -406,13 +408,20 @@ const compassModule = {
         state.tilt = smoothTilt;
       }
 
-      // ── Zenith / nadir guard ──────────────────────────────────────
-      // When the camera aims ≥ 65° above (or below) the horizon, the device
-      // orientation axes approach gimbal lock and webkitCompassHeading spins
-      // erratically. Freeze state.heading at its last good value instead of
-      // polluting it with garbage readings.
+      // ── Zenith / nadir guard (with hysteresis) ───────────────────
+      // When the camera aims near zenith/nadir, webkitCompassHeading spins
+      // erratically (gimbal lock). Freeze heading at its last good value.
+      // Hysteresis: lock at > 60°, unlock at < 50° — prevents the guard from
+      // toggling on/off when the smoothed tilt oscillates near the threshold.
       const camAlt = state.tilt ?? 0;
-      if (Math.abs(camAlt) > 65) {
+      const absAlt = Math.abs(camAlt);
+      if (!isZenithLocked && absAlt > 60) {
+        isZenithLocked = true;
+        gateRejects = 0; // reset gate so it starts clean when we re-enter normal range
+      } else if (isZenithLocked && absAlt < 50) {
+        isZenithLocked = false;
+      }
+      if (isZenithLocked) {
         uiModule.setDot(dom.compassDot, 'active');
         if (state.heading !== null) {
           uiModule.updateCompass(state.heading);
