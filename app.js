@@ -1038,6 +1038,7 @@ const arOverlayModule = {
   _canvas:      null,
   _ctx:         null,
   _sunPaths:    {},          // { key: [{alt, az, hour, min}] }
+  _moonPath:    null,        // [{alt, az, hour, min}] for today
   _lastCompute: 0,
   _COMPUTE_MS:  300_000,
 
@@ -1114,6 +1115,22 @@ const arOverlayModule = {
       const base = (p.month !== null) ? new Date(year, p.month, p.day, 0, 0, 0) : today;
       this._computePath(lat, lng, base, p.key);
     }
+    this._computeMoonPath(lat, lng, today);
+  },
+
+  _computeMoonPath(lat, lng, base) {
+    const path = [];
+    for (let m = 0; m < 1440; m += 10) {
+      const t   = new Date(base.getTime() + m * 60_000);
+      const pos = SunCalc.getMoonPosition(t, lat, lng);
+      path.push({
+        alt:  pos.altitude * 180 / Math.PI,
+        az:   (pos.azimuth  * 180 / Math.PI + 180 + 360) % 360,
+        hour: t.getHours(),
+        min:  t.getMinutes(),
+      });
+    }
+    this._moonPath = path;
   },
 
   _computePath(lat, lng, base, key) {
@@ -1349,16 +1366,60 @@ const arOverlayModule = {
       }
     }
 
-    // ── Moon ─────────────────────────────────────────────────
+    // ── Moon path arc ─────────────────────────────────────────
+    if (this._moonPath) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(186,230,253,0.7)'; // pale sky-blue
+      ctx.lineWidth   = 1.5;
+      ctx.lineCap     = 'round';
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      let moonPen = false;
+      this._moonPath.forEach(pt => {
+        if (pt.alt <= 0) { moonPen = false; return; }
+        const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
+        if (inFrame) {
+          if (moonPen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); moonPen = true; }
+        } else { moonPen = false; }
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Hour labels every 2 h
+      this._moonPath.filter(pt => pt.min === 0 && pt.hour % 2 === 0 && pt.alt > 0).forEach(pt => {
+        const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
+        if (!inFrame) return;
+        const lbl = pt.hour === 0 ? '12am' : pt.hour < 12 ? `${pt.hour}am`
+                  : pt.hour === 12 ? '12pm' : `${pt.hour - 12}pm`;
+        this._pill(ctx, x, y - 14, lbl, 'rgba(186,230,253,0.95)');
+      });
+      ctx.restore();
+    }
+
+    // ── Moon marker ───────────────────────────────────────────
     if (state.moon.azimuth !== null && state.moon.elevation > -5) {
       const { x, y, inFrame } = this._proj(
         state.moon.elevation, state.moon.azimuth, camAlt, camAz, W, H
       );
       if (inFrame) {
-        ctx.font = '26px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.font = '28px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillStyle = '#ffffff'; ctx.fillText(state.moon.phaseEmoji ?? '🌙', x, y);
-        ctx.fillStyle = 'rgba(200,200,220,0.8)'; ctx.font = '10px monospace';
-        ctx.textBaseline = 'top'; ctx.fillText(`${state.moon.elevation.toFixed(0)}°`, x, y + 14);
+
+        const altStr = state.moon.elevation >= 0
+          ? `+${state.moon.elevation.toFixed(0)}`
+          : state.moon.elevation.toFixed(0);
+        const az  = state.moon.azimuth;
+        const info = `Ele: ${altStr}°  Az: ${az.toFixed(0)}° (${this._toCardinal(az)})`;
+        const iw  = (() => { ctx.font = 'bold 11px monospace'; return ctx.measureText(info).width + 14; })();
+        const ix  = x - iw / 2, iy = y + 22;
+        ctx.fillStyle = 'rgba(15,23,42,0.70)';
+        ctx.beginPath();
+        if (ctx.roundRect) { ctx.roundRect(ix, iy, iw, 18, 4); } else { ctx.rect(ix, iy, iw, 18); }
+        ctx.fill();
+        ctx.fillStyle = 'rgba(186,230,253,0.95)';
+        ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(info, x, iy + 9);
       }
     }
 
