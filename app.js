@@ -1195,6 +1195,7 @@ const arOverlayModule = {
       ctx.beginPath();
       let pen = false;
       path.forEach(pt => {
+        if (pt.alt <= 0) { pen = false; return; }
         const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
         if (inFrame) {
           if (pen) { ctx.lineTo(x, y); } else { ctx.moveTo(x, y); pen = true; }
