@@ -1499,14 +1499,13 @@ const permModule = {
       gpsModule.start();
 
       // ── Reveal data card ────────────────────────────────────────
-      if (cameraOk) {
-        state.permissionsGranted = true;
-        uiModule.showDataSection();
-      } else {
-        uiModule.showPermError(
-          'Camera access is required. Check your browser and device Settings, then refresh.'
-        );
-        uiModule.setPermBtnLoading(false);
+      // Camera is optional — GPS + compass data works without it.
+      // Desktop browsers and denied camera still show full data.
+      state.permissionsGranted = true;
+      uiModule.showDataSection();
+      if (!cameraOk) {
+        // CAM dot stays red; subtle notice replaces the error block
+        console.info('[Permissions] Camera unavailable — running in data-only mode.');
       }
 
     } catch (err) {
