@@ -1684,18 +1684,20 @@ const permModule = {
 // ================================================================
 const sheetModule = {
 
-  _main:          null,
-  _dragging:      false,
-  _startY:        0,
+  _main:           null,
+  _chevron:        null,
+  _dragging:       false,
+  _startY:         0,
   _startTranslate: 0,
-  _currentY:      0,
-  _expanded:      true,
-  _SNAP_VISIBLE:  64,   // px of card visible when collapsed (handle + tab bar)
-  _TRANSITION:    'transform 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
+  _currentY:       0,
+  _expanded:       true,
+  _SNAP_VISIBLE:   64,   // px of card visible when collapsed (handle + tab bar)
+  _TRANSITION:     'transform 0.38s cubic-bezier(0.32, 0.72, 0, 1)',
 
   init() {
-    this._main   = document.getElementById('bottom-sheet');
-    const handle = document.getElementById('sheet-handle');
+    this._main    = document.getElementById('bottom-sheet');
+    this._chevron = document.getElementById('sheet-chevron');
+    const handle  = document.getElementById('sheet-handle');
     if (!this._main || !handle) return;
 
     this._main.style.transition = this._TRANSITION;
@@ -1749,6 +1751,9 @@ const sheetModule = {
     this._currentY = target;
     this._main.style.transition = this._TRANSITION;
     this._main.style.transform  = `translateY(${target}px)`;
+    if (this._chevron) {
+      this._chevron.style.transform = this._expanded ? 'rotate(0deg)' : 'rotate(180deg)';
+    }
   },
 };
 
@@ -1763,6 +1768,7 @@ window.App = {
   retryCompass:       () => compassModule.requestPermission(),
   saveLocation:       () => saveModule.save(),
   switchTab:          (name) => { tabModule.switch(name); sheetModule.expand(); },
+  toggleSheet:        ()     => sheetModule.toggle(),
   toggleArPath:       (key)  => arOverlayModule.togglePath(key),
   setArCustomDate:    (val)  => arOverlayModule.setCustomDate(val),
 };
