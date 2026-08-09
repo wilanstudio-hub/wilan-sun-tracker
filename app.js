@@ -1079,19 +1079,29 @@ const arOverlayModule = {
   },
 
   _proj(alt, az, camAlt, camAz, W, H) {
-    // Perspective (pinhole) projection — matches actual camera lens geometry.
-    // Linear scaling diverges at >20° from centre; tan() stays correct to FOV edge.
+    // ── Step 1: angular delta from camera centre ──────────────────
+    // Normalize azimuth diff to −180…+180 so crossing North (359→1°) works.
     let dAz = az - camAz;
     if (dAz >  180) dAz -= 360;
     if (dAz < -180) dAz += 360;
-    const dAlt  = alt - camAlt;
-    const dAzR  = dAz  * Math.PI / 180;
-    const dAltR = dAlt * Math.PI / 180;
-    return {
-      x:       W / 2 + (W / 2) * Math.tan(dAzR)  / this._tanHH,
-      y:       H / 2 - (H / 2) * Math.tan(dAltR) / this._tanHV,
-      inFrame: Math.abs(dAz) < this._FOV_H * 0.48 && Math.abs(dAlt) < this._FOV_V * 0.48,
-    };
+
+    // Camera elevation offset: positive = sun above camera aim-point.
+    // devicePitch (beta) is converted to camAlt as (beta − 90) upstream,
+    // so camAlt=0 when phone is upright and the sun is at the horizon.
+    const dAlt = alt - camAlt;
+
+    // ── Step 2: perspective (tan) projection ─────────────────────
+    // tan(dAz) / tan(FOV_H/2) maps angle → normalised −1…+1 range.
+    // Multiply by half-width/height to get canvas pixels.
+    // Canvas Y=0 is top-of-screen, so we subtract to make elevation go UP.
+    const x = W / 2 + (W / 2) * Math.tan(dAz  * Math.PI / 180) / this._tanHH;
+    const y = H / 2 - (H / 2) * Math.tan(dAlt * Math.PI / 180) / this._tanHV;
+
+    // ── Step 3: inFrame test ──────────────────────────────────────
+    const inFrame = Math.abs(dAz) < this._FOV_H * 0.48
+                 && Math.abs(dAlt) < this._FOV_V * 0.48;
+
+    return { x, y, inFrame };
   },
 
   _pill(ctx, x, y, text, color) {
