@@ -359,44 +359,55 @@ const compassModule = {
   },
 
   _listen() {
-    let lastUpdate    = 0;
-    let hasAbsolute   = false; // once we get `absolute` events, ignore non-absolute
+    let lastUpdate  = 0;
+    let hasAbsolute = false;
 
-    // Build the handler and persist the reference so we can remove it later
+    // EMA smoothing state — unit-vector form handles 0/360 wrap-around for heading
+    let smoothSinH = null, smoothCosH = null; // heading EMA (circular)
+    let smoothTilt = null;                     // tilt EMA (linear)
+    const ALPHA_H = 0.18;  // 18% new reading → strong smoothing, ~0.3 s settling
+    const ALPHA_T = 0.22;  // tilt can be slightly more responsive
+
     state.compassHandler = (event) => {
-      // Prefer absolute events (true North) over relative ones
       if (event.absolute === true) hasAbsolute = true;
-      if (!event.absolute && hasAbsolute)  return;
+      if (!event.absolute && hasAbsolute) return;
 
-      // Throttle DOM updates to 10 Hz
+      // Throttle to 10 Hz — EMA does the temporal smoothing within that
       const now = Date.now();
       if (now - lastUpdate < 100) return;
       lastUpdate = now;
 
       let heading = null;
-
       if (typeof event.webkitCompassHeading === 'number') {
-        // iOS: already 0–360° from magnetic North, corrected for portrait/landscape
         heading = event.webkitCompassHeading;
       } else if (typeof event.alpha === 'number') {
-        // Chromium/Firefox: alpha is the rotation around the Z-axis.
-        // For absolute events this is 0–360° from true North (counterclockwise),
-        // so we convert: compass_bearing = (360 - alpha) % 360
         heading = (360 - event.alpha + 360) % 360;
       }
-
       if (heading === null || !isFinite(heading)) return;
 
-      state.heading = heading;
+      // ── Circular EMA for heading (avoids 359°→1° jump artefact) ──
+      const rad = heading * Math.PI / 180;
+      if (smoothSinH === null) {
+        smoothSinH = Math.sin(rad);
+        smoothCosH = Math.cos(rad);
+      } else {
+        smoothSinH = ALPHA_H * Math.sin(rad) + (1 - ALPHA_H) * smoothSinH;
+        smoothCosH = ALPHA_H * Math.cos(rad) + (1 - ALPHA_H) * smoothCosH;
+      }
+      const smoothedHeading = (Math.atan2(smoothSinH, smoothCosH) * 180 / Math.PI + 360) % 360;
+      state.heading = smoothedHeading;
 
-      // Camera elevation: beta=90° → phone upright → camera horizontal (tilt=0°)
-      //                   beta=0°  → phone flat    → camera up (tilt=90°)
+      // ── Linear EMA for tilt ───────────────────────────────────────
       if (typeof event.beta === 'number') {
-        state.tilt = 90 - event.beta;
+        const rawTilt = 90 - event.beta;
+        smoothTilt = smoothTilt === null
+          ? rawTilt
+          : ALPHA_T * rawTilt + (1 - ALPHA_T) * smoothTilt;
+        state.tilt = smoothTilt;
       }
 
       uiModule.setDot(dom.compassDot, 'active');
-      uiModule.updateCompass(heading);
+      uiModule.updateCompass(smoothedHeading);
 
       // Keep both AR arrows aligned to the new heading
       if (state.sun.azimuth  !== null) uiModule.updateSunArrow(state.sun.azimuth, heading);
