@@ -76,6 +76,7 @@ const dom = {
   camDot:              document.getElementById('cam-dot'),
   gpsDot:              document.getElementById('gps-dot'),
   compassDot:          document.getElementById('compass-dot'),
+  compassBanner:       document.getElementById('compass-banner'),
 
   // Permission gate
   permissionSection:   document.getElementById('permission-section'),
@@ -338,12 +339,14 @@ const compassModule = {
         // Thrown when called outside a user gesture
         console.error('[Compass] requestPermission() must be called in a user gesture:', err.message);
         uiModule.setDot(dom.compassDot, 'error');
+        uiModule.showCompassBanner();
         return false;
       }
 
       if (response !== 'granted') {
         console.warn('[Compass] iOS motion permission denied.');
         uiModule.setDot(dom.compassDot, 'error');
+        uiModule.showCompassBanner();
         return false;
       }
 
@@ -382,7 +385,7 @@ const compassModule = {
         heading = (360 - event.alpha + 360) % 360;
       }
 
-      if (heading === null) return;
+      if (heading === null || !isFinite(heading)) return;
 
       state.heading = heading;
 
@@ -969,8 +972,12 @@ const arOverlayModule = {
   _lastCompute: 0,
   _COMPUTE_MS:  300_000,
 
-  _FOV_H: 55,   // horizontal FOV in portrait (degrees)
-  _FOV_V: 70,   // vertical FOV in portrait
+  _FOV_H: 65,   // horizontal FOV in portrait — typical wide phone camera
+  _FOV_V: 78,   // vertical FOV in portrait
+
+  // Precomputed tan(FOV/2) for perspective projection (set in init)
+  _tanHH: 0,
+  _tanHV: 0,
 
   _PATHS: [
     { key: 'today', label: 'Today',  color: 'rgba(251,191,36,0.9)',  month: null, day: null },
@@ -985,6 +992,8 @@ const arOverlayModule = {
     this._canvas = document.getElementById('ar-canvas');
     if (!this._canvas) return;
     this._ctx = this._canvas.getContext('2d');
+    this._tanHH = Math.tan((this._FOV_H / 2) * Math.PI / 180);
+    this._tanHV = Math.tan((this._FOV_V / 2) * Math.PI / 180);
     const tick = () => { this._draw(); requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   },
@@ -1048,14 +1057,18 @@ const arOverlayModule = {
   },
 
   _proj(alt, az, camAlt, camAz, W, H) {
+    // Perspective (pinhole) projection — matches actual camera lens geometry.
+    // Linear scaling diverges at >20° from centre; tan() stays correct to FOV edge.
     let dAz = az - camAz;
     if (dAz >  180) dAz -= 360;
     if (dAz < -180) dAz += 360;
-    const dAlt = alt - camAlt;
+    const dAlt  = alt - camAlt;
+    const dAzR  = dAz  * Math.PI / 180;
+    const dAltR = dAlt * Math.PI / 180;
     return {
-      x:       W / 2 + (dAz  / this._FOV_H) * W,
-      y:       H / 2 - (dAlt / this._FOV_V) * H,
-      inFrame: Math.abs(dAz) < this._FOV_H * 0.58 && Math.abs(dAlt) < this._FOV_V * 0.58,
+      x:       W / 2 + (W / 2) * Math.tan(dAzR)  / this._tanHH,
+      y:       H / 2 - (H / 2) * Math.tan(dAltR) / this._tanHV,
+      inFrame: Math.abs(dAz) < this._FOV_H * 0.48 && Math.abs(dAlt) < this._FOV_V * 0.48,
     };
   },
 
@@ -1087,6 +1100,8 @@ const arOverlayModule = {
     ctx.clearRect(0, 0, W, H);
     if (!state.coords) return;
 
+    // When compass is unavailable, assume North (0°) so the AR view
+    // still renders — a banner at the top explains the assumption.
     const camAz  = state.heading ?? 0;
     const camAlt = state.tilt    ?? 0;
 
@@ -1096,9 +1111,9 @@ const arOverlayModule = {
       ctx.setLineDash([4, 6]);
       ctx.lineWidth = 0.75;
 
-      // Horizontal elevation lines
+      // Horizontal elevation lines (perspective-correct y positions)
       for (let a = -15; a <= 75; a += 15) {
-        const y = H / 2 - (a - camAlt) / this._FOV_V * H;
+        const y = H / 2 - (H / 2) * Math.tan((a - camAlt) * Math.PI / 180) / this._tanHV;
         if (y < -10 || y > H + 10) continue;
         ctx.strokeStyle = a === 0 ? 'rgba(99,102,241,0.5)' : 'rgba(59,130,246,0.22)';
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
@@ -1113,13 +1128,13 @@ const arOverlayModule = {
         }
       }
 
-      // Vertical azimuth lines every 30°
+      // Vertical azimuth lines every 30° (perspective-correct x positions)
       for (let az = 0; az < 360; az += 30) {
         let dAz = az - camAz;
         if (dAz >  180) dAz -= 360;
         if (dAz < -180) dAz += 360;
-        if (Math.abs(dAz) > this._FOV_H * 0.65) continue;
-        const x = W / 2 + (dAz / this._FOV_H) * W;
+        if (Math.abs(dAz) >= this._FOV_H / 2) continue;
+        const x = W / 2 + (W / 2) * Math.tan(dAz * Math.PI / 180) / this._tanHH;
         ctx.strokeStyle = 'rgba(59,130,246,0.22)';
         ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
         ctx.setLineDash([]);
@@ -1155,8 +1170,8 @@ const arOverlayModule = {
       });
       ctx.stroke();
 
-      // Hour dots + labels
-      path.filter(pt => pt.min === 0 && pt.alt > 0).forEach(pt => {
+      // Hour dots + labels — every 3 h to avoid crowding (6am, 9am, 12pm…)
+      path.filter(pt => pt.min === 0 && pt.hour % 3 === 0 && pt.alt > 0).forEach(pt => {
         const { x, y, inFrame } = this._proj(pt.alt, pt.az, camAlt, camAz, W, H);
         if (!inFrame) return;
         ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2);
@@ -1170,44 +1185,75 @@ const arOverlayModule = {
       ctx.restore();
     }
 
-    // ── Current sun (crosshair + info) ───────────────────────
+    // ── Current sun (disc + rays + crosshair + info) ─────────
     if (state.sun.azimuth !== null && state.sun.elevation !== null) {
       const alt = state.sun.elevation;
       const az  = state.sun.azimuth;
       const { x, y } = this._proj(alt, az, camAlt, camAz, W, H);
 
+      ctx.save();
+
+      // Outer atmospheric glow (above horizon only)
       if (alt > 0) {
-        const glow = ctx.createRadialGradient(x, y, 8, x, y, 44);
-        glow.addColorStop(0, 'rgba(251,191,36,0.4)');
-        glow.addColorStop(1, 'rgba(251,191,36,0)');
-        ctx.beginPath(); ctx.arc(x, y, 44, 0, Math.PI * 2);
-        ctx.fillStyle = glow; ctx.fill();
+        const atmo = ctx.createRadialGradient(x, y, 10, x, y, 56);
+        atmo.addColorStop(0, 'rgba(251,191,36,0.35)');
+        atmo.addColorStop(0.5, 'rgba(251,130,0,0.12)');
+        atmo.addColorStop(1, 'rgba(251,191,36,0)');
+        ctx.beginPath(); ctx.arc(x, y, 56, 0, Math.PI * 2);
+        ctx.fillStyle = atmo; ctx.fill();
       }
 
-      ctx.font = '30px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#ffffff'; ctx.fillText('☀', x, y);
+      // 8 sun rays
+      const RAY_INNER = 17, RAY_OUTER = 28;
+      ctx.strokeStyle = 'rgba(253,224,71,0.85)';
+      ctx.lineWidth   = 2;
+      ctx.lineCap     = 'round';
+      for (let i = 0; i < 8; i++) {
+        const a = (i * 45) * Math.PI / 180;
+        ctx.beginPath();
+        ctx.moveTo(x + RAY_INNER * Math.cos(a), y + RAY_INNER * Math.sin(a));
+        ctx.lineTo(x + RAY_OUTER * Math.cos(a), y + RAY_OUTER * Math.sin(a));
+        ctx.stroke();
+      }
+
+      // Sun disc — yellow circle with inner highlight
+      const DISC_R = 13;
+      const disc = ctx.createRadialGradient(x - 3, y - 3, 1, x, y, DISC_R);
+      disc.addColorStop(0, '#fffde7');   // near-white highlight
+      disc.addColorStop(0.4, '#fde047'); // bright yellow
+      disc.addColorStop(1,   '#f59e0b'); // amber edge
+      ctx.beginPath(); ctx.arc(x, y, DISC_R, 0, Math.PI * 2);
+      ctx.fillStyle = disc; ctx.fill();
+
+      // Thin edge stroke so the disc reads clearly over bright sky
+      ctx.strokeStyle = 'rgba(180,100,0,0.45)';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
 
       // Crosshair ring
       ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, y, 24, 0, Math.PI * 2); ctx.stroke();
       [0, 90, 180, 270].forEach(a => {
         const r = a * Math.PI / 180;
         ctx.beginPath();
-        ctx.moveTo(x + 22 * Math.sin(r), y - 22 * Math.cos(r));
-        ctx.lineTo(x + 30 * Math.sin(r), y - 30 * Math.cos(r));
+        ctx.moveTo(x + 24 * Math.sin(r), y - 24 * Math.cos(r));
+        ctx.lineTo(x + 33 * Math.sin(r), y - 33 * Math.cos(r));
         ctx.stroke();
       });
 
+      ctx.restore();
+
       // Info pill
+      ctx.font = 'bold 11px monospace';
       const altStr = alt >= 0 ? `+${alt.toFixed(0)}` : alt.toFixed(0);
       const info   = `Ele: ${altStr}°  Az: ${az.toFixed(0)}° (${this._toCardinal(az)})`;
       const iw     = ctx.measureText(info).width + 14;
+      const ix = x - iw / 2, iy = y + 38;
       ctx.fillStyle = 'rgba(0,0,0,0.65)';
       ctx.beginPath();
-      const ix = x - iw / 2, iy = y + 35;
       if (ctx.roundRect) { ctx.roundRect(ix, iy, iw, 18, 4); } else { ctx.rect(ix, iy, iw, 18); }
       ctx.fill();
-      ctx.fillStyle = 'rgba(251,191,36,0.95)'; ctx.font = 'bold 11px monospace';
+      ctx.fillStyle = 'rgba(251,191,36,0.95)';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText(info, x, iy + 9);
     }
@@ -1224,7 +1270,15 @@ const arOverlayModule = {
         ctx.textBaseline = 'top'; ctx.fillText(`${state.moon.elevation.toFixed(0)}°`, x, y + 14);
       }
     }
+
+    // ── Compass-unavailable banner (drawn on top of AR) ───────
+    if (state.heading === null) {
+      this._drawNorthBanner(ctx, W, H);
+    }
   },
+
+  // Canvas-side no-op: the HTML #compass-banner handles the UI now.
+  _drawNorthBanner() {},
 
   _toCardinal(deg) {
     const pts = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
@@ -1283,6 +1337,12 @@ const uiModule = {
     dom.headingDisplay.textContent  = `${rounded}°`;
     dom.compassDegrees.textContent  = `${rounded}°`;
     dom.compassCardinal.textContent = this._toCardinal(heading);
+    // Hide the "enable compass" banner once heading is streaming
+    dom.compassBanner?.classList.add('hidden');
+  },
+
+  showCompassBanner() {
+    if (state.permissionsGranted) dom.compassBanner?.classList.remove('hidden');
   },
 
   // Sun azimuth and elevation (null = SunCalc not yet active)
@@ -1321,10 +1381,10 @@ const uiModule = {
   // Set permission button to a loading / idle appearance
   setPermBtnLoading(loading) {
     dom.btnPermissions.disabled  = loading;
-    dom.permBtnIcon.textContent  = loading ? '⏳' : '📡';
+    dom.permBtnIcon.textContent  = loading ? '⏳' : '▶';
     dom.permBtnText.textContent  = loading
-      ? 'Requesting permissions…'
-      : 'Request Camera & Sensor Permissions';
+      ? 'Starting AR Scout…'
+      : 'Start AR Scout';
   },
 
   showPermError(msg) {
@@ -1598,6 +1658,10 @@ const permModule = {
       // Desktop browsers and denied camera still show full data.
       state.permissionsGranted = true;
       uiModule.showDataSection();
+      // Show banner if heading never arrived (permission denied or not supported)
+      setTimeout(() => {
+        if (state.heading === null) uiModule.showCompassBanner();
+      }, 1500);
       if (!cameraOk) {
         // CAM dot stays red; subtle notice replaces the error block
         console.info('[Permissions] Camera unavailable — running in data-only mode.');
@@ -1619,6 +1683,7 @@ const permModule = {
 // ================================================================
 window.App = {
   requestPermissions: () => permModule.request(),
+  retryCompass:       () => compassModule.requestPermission(),
   saveLocation:       () => saveModule.save(),
   switchTab:          (name) => tabModule.switch(name),
   toggleArPath:       (key)  => arOverlayModule.togglePath(key),
